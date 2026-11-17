@@ -44,6 +44,7 @@ export default function MemoryPage() {
   const [bestScore, setBestScore] = useState(0);
   const [gamesPlayed, setGamesPlayed] = useState(0);
   const [loaded, setLoaded] = useState(false);
+  const totalPairs = cards.length / 2;
 
   const totalPairs = cards.length / 2;
 
