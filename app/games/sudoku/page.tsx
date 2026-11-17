@@ -51,7 +51,7 @@ export default function SudokuPage() {
     }
 
     for (let column = 0; column < 9; column++) {
-      const values = board.filter((_, index => index % 9 === column));
+    const values = board.filter((_, index) => index % 9 === column);
       if (new Set(values).size !== 9) {
         setMessage("Check your columns.");
         return;
