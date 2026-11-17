@@ -3,59 +3,45 @@ import Link from "next/link";
 const games = [
   {
     name: "Slingshot Adventures",
-    description: "Aim, launch and knock down structures.",
-    icon: "🎯",
-    category: "Puzzle",
-    href: "/games/slingshot",
-    color: "#eaf2ff"
+    description: "Launch, aim and knock down the targets.",
+    icon: "🐦",
+    category: "ARCADE",
+    href: "/games/slingshot"
   },
   {
     name: "Checkers",
-    description: "Challenge the computer to a classic game.",
+    description: "Challenge the computer in classic checkers.",
     icon: "🔴",
-    category: "Board game",
-    href: "/games/checkers",
-    color: "#fff0ed"
+    category: "STRATEGY",
+    href: "/games/checkers"
   },
   {
     name: "Solitaire",
     description: "Relax with a classic card game.",
     icon: "🃏",
-    category: "Cards",
-    href: "/games/solitaire",
-    color: "#e9f7ef"
-  },
-  {
-    name: "Mahjong",
-    description: "Match tiles and clear the board.",
-    icon: "🀄",
-    category: "Puzzle",
-    href: "/games/mahjong",
-    color: "#fff5df"
+    category: "CARD GAME",
+    href: "/games/solitaire"
   },
   {
     name: "Sudoku",
-    description: "Test your number skills.",
+    description: "Test your number and logic skills.",
     icon: "🔢",
-    category: "Brain training",
-    href: "/games/sudoku",
-    color: "#f1eaff"
+    category: "PUZZLE",
+    href: "/games/sudoku"
   },
   {
     name: "Minesweeper",
-    description: "Use logic to uncover the board.",
+    description: "Find the safe squares and avoid the mines.",
     icon: "💣",
-    category: "Puzzle",
-    href: "/games/minesweeper",
-    color: "#edf1f5"
+    category: "PUZZLE",
+    href: "/games/minesweeper"
   },
   {
     name: "Memory Match",
-    description: "Find all the matching pairs.",
+    description: "Find matching pairs of pictures.",
     icon: "🧠",
-    category: "Brain training",
-    href: "/games/memory",
-    color: "#ffeafa"
+    category: "BRAIN TRAINING",
+    href: "/games/memory"
   }
 ];
 
@@ -64,91 +50,58 @@ export default function HomePage() {
     <main className="home">
       <header className="topbar">
         <Link href="/" className="brand">
-          <span className="brand-icon">🎮</span>
-          Keith's Games
+          🎮 Keith's Games
         </Link>
-
-        <nav>
-          <Link href="#games">Games</Link>
-          <Link href="#about">About</Link>
-        </nav>
+        <span>Made for Keith ❤️</span>
       </header>
 
       <section className="welcome">
-        <div className="welcome-content">
-          <span className="eyebrow">YOUR PERSONAL GAME COLLECTION</span>
-          <h1>Welcome to Keith's Games.</h1>
+        <div>
+          <span className="eyebrow">YOUR PERSONAL ARCADE</span>
+          <h1>Welcome to Keith's Games</h1>
           <p>
-            Your favourite games, all in one place.
-            Pick a game, take your time and enjoy yourself.
+            A collection of classic games, puzzles and challenges.
+            Pick a game and enjoy yourself.
           </p>
-
-          <Link href="#games" className="primary-button">
-            Explore games <span>→</span>
-          </Link>
-        </div>
-
-        <div className="welcome-decoration" aria-hidden="true">
-          <span>🎯</span>
-          <span>🃏</span>
-          <span>🔴</span>
         </div>
       </section>
 
-      <section className="games-section" id="games">
+      <section className="games-section">
         <div className="section-heading">
           <div>
             <span className="eyebrow">THE COLLECTION</span>
             <h2>Choose a game</h2>
-            <p>Something for every mood.</p>
           </div>
-          <span className="game-count">{games.length} games</span>
+          <span>{games.length} games available</span>
         </div>
 
         <div className="games-grid">
-          {games.map((game) => (
+          {games.map(game => (
             <Link
               href={game.href}
               className="game-card"
               key={game.name}
             >
-              <div
-                className="game-image"
-                style={{ backgroundColor: game.color }}
-              >
-                <span>{game.icon}</span>
-              </div>
-
-              <div className="game-info">
-                <span className="game-category">
-                  {game.category}
-                </span>
-                <h3>{game.name}</h3>
-                <p>{game.description}</p>
-
-                <div className="play-link">
-                  Play game <span>→</span>
-                </div>
-              </div>
+              <div className="game-icon">{game.icon}</div>
+              <span className="game-category">{game.category}</span>
+              <h3>{game.name}</h3>
+              <p>{game.description}</p>
+              <span className="play-link">Play game →</span>
             </Link>
           ))}
         </div>
       </section>
 
-      <section className="about-section" id="about">
-        <span>❤️</span>
-        <div>
-          <h2>Made for Keith.</h2>
-          <p>
-            A personal collection of games to enjoy whenever
-            you fancy a game.
-          </p>
-        </div>
+      <section className="about-section">
+        <h2>A little something for everyone</h2>
+        <p>
+          Enjoy a quick game, challenge yourself or take your time
+          with a puzzle. Your games are all in one place.
+        </p>
       </section>
 
       <footer>
-        <span>Keith's Games</span>
-        <span>Made with care ❤️</span>
+        Keith's Games © 2026
       </footer>
     </main>
   );
