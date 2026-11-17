@@ -3,106 +3,141 @@ import Link from "next/link";
 const games = [
   {
     name: "Slingshot Adventures",
-    description: "Launch, aim and knock down the targets.",
+    description: "Aim, launch and complete challenges.",
     icon: "🐦",
     category: "ARCADE",
-    href: "/games/slingshot"
+    href: "/games/slingshot",
+    accent: "orange"
   },
   {
     name: "Checkers",
-    description: "Challenge the computer in classic checkers.",
+    description: "Play against the computer.",
     icon: "🔴",
     category: "STRATEGY",
-    href: "/games/checkers"
+    href: "/games/checkers",
+    accent: "red"
   },
   {
     name: "Solitaire",
-    description: "Relax with a classic card game.",
+    description: "A classic card game.",
     icon: "🃏",
     category: "CARD GAME",
-    href: "/games/solitaire"
+    href: "/games/solitaire",
+    accent: "green"
   },
   {
     name: "Sudoku",
-    description: "Test your number and logic skills.",
+    description: "Put your number skills to the test.",
     icon: "🔢",
     category: "PUZZLE",
-    href: "/games/sudoku"
+    href: "/games/sudoku",
+    accent: "blue"
   },
   {
     name: "Minesweeper",
-    description: "Find the safe squares and avoid the mines.",
+    description: "Find the safe squares.",
     icon: "💣",
     category: "PUZZLE",
-    href: "/games/minesweeper"
+    href: "/games/minesweeper",
+    accent: "purple"
   },
   {
     name: "Memory Match",
-    description: "Find matching pairs of pictures.",
+    description: "Find all the matching pairs.",
     icon: "🧠",
     category: "BRAIN TRAINING",
-    href: "/games/memory"
+    href: "/games/memory",
+    accent: "pink"
   }
 ];
 
 export default function HomePage() {
   return (
-    <main className="home">
-      <header className="topbar">
-        <Link href="/" className="brand">
-          🎮 Keith's Games
+    <main className="app-shell">
+      <aside className="app-sidebar">
+        <Link href="/" className="app-brand">
+          <span className="app-brand-icon">🎮</span>
+          <span>Keith's Games</span>
         </Link>
-        <span>Made for Keith ❤️</span>
-      </header>
 
-      <section className="welcome">
-        <div>
-          <span className="eyebrow">YOUR PERSONAL ARCADE</span>
-          <h1>Welcome to Keith's Games</h1>
-          <p>
-            A collection of classic games, puzzles and challenges.
-            Pick a game and enjoy yourself.
-          </p>
-        </div>
-      </section>
+        <div className="sidebar-label">MENU</div>
 
-      <section className="games-section">
-        <div className="section-heading">
+        <nav className="sidebar-nav">
+          <Link href="/" className="sidebar-link active">
+            <span>⌂</span>
+            Home
+          </Link>
+          <a href="#games" className="sidebar-link">
+            <span>▦</span>
+            All games
+          </a>
+        </nav>
+
+        <div className="sidebar-bottom">
+          <div className="sidebar-user-icon">K</div>
           <div>
-            <span className="eyebrow">THE COLLECTION</span>
-            <h2>Choose a game</h2>
+            <strong>Keith</strong>
+            <span>Player</span>
           </div>
-          <span>{games.length} games available</span>
         </div>
+      </aside>
 
-        <div className="games-grid">
-          {games.map(game => (
-            <Link
-              href={game.href}
-              className="game-card"
-              key={game.name}
-            >
-              <div className="game-icon">{game.icon}</div>
-              <span className="game-category">{game.category}</span>
-              <h3>{game.name}</h3>
-              <p>{game.description}</p>
-              <span className="play-link">Play game →</span>
-            </Link>
-          ))}
-        </div>
+      <section className="app-main">
+        <header className="app-topbar">
+          <div>
+            <span className="app-date-label">YOUR GAME LIBRARY</span>
+            <h1>Welcome back, Keith</h1>
+          </div>
+          <div className="app-player-badge">
+            <span>●</span> Ready to play
+          </div>
+        </header>
+
+        <section className="app-feature">
+          <div className="app-feature-content">
+            <span className="app-feature-label">YOUR PERSONAL ARCADE</span>
+            <h2>What would you like to play?</h2>
+            <p>Choose a game and pick up where you left off.</p>
+            <a href="#games" className="app-feature-button">
+              Browse games <span>→</span>
+            </a>
+          </div>
+          <div className="app-feature-art">🎮</div>
+        </section>
+
+        <section className="app-games-section" id="games">
+          <div className="app-section-heading">
+            <div>
+              <span className="app-section-label">THE COLLECTION</span>
+              <h2>All games</h2>
+            </div>
+            <span className="app-game-count">{games.length} games</span>
+          </div>
+
+          <div className="app-games-grid">
+            {games.map((game) => (
+              <Link
+                href={game.href}
+                className={`app-game-card ${game.accent}`}
+                key={game.name}
+              >
+                <div className="app-game-card-top">
+                  <div className="app-game-icon">{game.icon}</div>
+                  <span className="app-game-arrow">↗</span>
+                </div>
+                <span className="app-game-category">{game.category}</span>
+                <h3>{game.name}</h3>
+                <p>{game.description}</p>
+                <span className="app-play-link">Play now <span>→</span></span>
+              </Link>
+            ))}
+          </div>
+        </section>
+
+        <footer className="app-footer">
+          Keith's Games <span>•</span> Made for Keith
+        </footer>
       </section>
-
-      <section className="about-section">
-        <h2>A little something for everyone</h2>
-        <p>
-          Enjoy a quick game, challenge yourself or take your time
-          with a puzzle. Your games are all in one place.
-        </p>
-      </section>
-
-      <footer>
-        Keith's Games © 2026
-      </footer>
     </main>
   );
 }
