@@ -989,3 +989,134 @@ footer {
     display: flex;
   }
 }
+
+/* SUDOKU */
+
+.sudoku-page {
+  min-height: 100vh;
+  background: #f5f7fb;
+  color: #202b3c;
+}
+
+.sudoku-content {
+  max-width: 850px;
+  margin: auto;
+  padding: 45px 20px;
+  text-align: center;
+}
+
+.sudoku-content h1 {
+  font-size: 38px;
+  margin-bottom: 8px;
+}
+
+.sudoku-content > p {
+  color: #718096;
+  margin-bottom: 25px;
+}
+
+.sudoku-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 25px;
+}
+
+.sudoku-controls button,
+.sudoku-number-pad button {
+  padding: 11px 16px;
+  border: 1px solid #dce3ed;
+  background: white;
+  color: #202b3c;
+  border-radius: 9px;
+  font-weight: 700;
+}
+
+.sudoku-controls button.active {
+  background: #3976d8;
+  color: white;
+  border-color: #3976d8;
+}
+
+.sudoku-layout {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 25px;
+  flex-wrap: wrap;
+}
+
+.sudoku-board {
+  width: min(90vw, 450px);
+  aspect-ratio: 1;
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  border: 3px solid #34445b;
+  background: #34445b;
+  gap: 1px;
+}
+
+.sudoku-cell {
+  min-width: 0;
+  border: none;
+  background: white;
+  font-size: clamp(16px, 4vw, 25px);
+  color: #3976d8;
+}
+
+.sudoku-cell.fixed {
+  color: #202b3c;
+  font-weight: 800;
+  background: #edf1f7;
+}
+
+.sudoku-cell.selected {
+  background: #cfe0fa;
+}
+
+.sudoku-cell.box-right {
+  border-right: 3px solid #34445b;
+}
+
+.sudoku-cell.box-bottom {
+  border-bottom: 3px solid #34445b;
+}
+
+.sudoku-number-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 55px);
+  gap: 9px;
+}
+
+.sudoku-number-pad button {
+  min-height: 48px;
+  font-size: 18px;
+}
+
+.sudoku-number-pad button:hover,
+.sudoku-controls button:hover {
+  filter: brightness(0.95);
+}
+
+.sudoku-message {
+  margin-top: 25px;
+  padding: 14px;
+  background: white;
+  border-radius: 10px;
+  font-weight: 700;
+}
+
+@media (max-width: 550px) {
+  .sudoku-content {
+    padding: 30px 10px;
+  }
+
+  .sudoku-layout {
+    gap: 18px;
+  }
+
+  .sudoku-number-pad {
+    grid-template-columns: repeat(5, 48px);
+  }
+}
