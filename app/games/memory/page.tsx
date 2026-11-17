@@ -46,8 +46,6 @@ export default function MemoryPage() {
   const [loaded, setLoaded] = useState(false);
   const totalPairs = cards.length / 2;
 
-  const totalPairs = cards.length / 2;
-
   useEffect(() => {
     async function loadStats() {
       try {
