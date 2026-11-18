@@ -8,6 +8,7 @@ import { supabase } from "@/lib/supabase";
 type Player = {
   player_id: string;
   username: string;
+  email: string;
   coins: number;
 };
 
@@ -33,12 +34,11 @@ export default function OwnerPage() {
     if (error) {
       setError(error.message);
       setPlayers([]);
-      return false;
+      return;
     }
 
     setError("");
     setPlayers((data || []) as Player[]);
-    return true;
   }
 
   useEffect(() => {
@@ -54,7 +54,7 @@ export default function OwnerPage() {
         return;
       }
 
-      const { data: playersData, error: ownerError } =
+      const { data: playerData, error: ownerError } =
         await supabase.rpc("owner_search_players", {
           search_text: "",
         });
@@ -62,14 +62,12 @@ export default function OwnerPage() {
       if (!active) return;
 
       if (ownerError) {
-        setError(
-          "Owner access check failed: " + ownerError.message
-        );
+        setError(ownerError.message);
         setLoading(false);
         return;
       }
 
-      setPlayers((playersData || []) as Player[]);
+      setPlayers((playerData || []) as Player[]);
       setLoading(false);
     }
 
@@ -110,16 +108,17 @@ export default function OwnerPage() {
     if (error) {
       setError(error.message);
     } else {
+      const updated = {
+        ...selected,
+        coins: Number(data),
+      };
+
+      setSelected(updated);
       setMessage(
         `${value} coins ${
           direction > 0 ? "given to" : "removed from"
-        } ${selected.username}.`
+        } ${selected.email}.`
       );
-
-      setSelected({
-        ...selected,
-        coins: Number(data),
-      });
 
       await searchPlayers(search);
     }
@@ -148,22 +147,15 @@ export default function OwnerPage() {
             <h1>Owner Panel</h1>
             <p>Manage players and Slingshot Adventures coins.</p>
           </div>
-
           <div style={styles.ownerBadge}>OWNER</div>
         </header>
-
-        {error && (
-          <div style={styles.errorBox}>
-            {error}
-          </div>
-        )}
 
         <section style={styles.card}>
           <h2>Find a player</h2>
 
           <input
             style={styles.input}
-            placeholder="Search by username..."
+            placeholder="Search email or username..."
             value={search}
             onChange={(e) => {
               const value = e.target.value;
@@ -190,19 +182,17 @@ export default function OwnerPage() {
                       : "#292e43",
                 }}
               >
-                <span>
+                <span style={styles.playerInfo}>
                   <strong>{player.username}</strong>
-                  <small>{player.player_id}</small>
+                  <small>{player.email}</small>
                 </span>
 
                 <strong>🪙 {player.coins}</strong>
               </button>
             ))}
 
-            {players.length === 0 && !error && (
-              <p style={styles.muted}>
-                No players found.
-              </p>
+            {players.length === 0 && (
+              <p style={styles.muted}>No players found.</p>
             )}
           </div>
         </section>
@@ -212,12 +202,14 @@ export default function OwnerPage() {
             <h2>Manage coins</h2>
 
             <div style={styles.selected}>
-              <span>{selected.username}</span>
-              <strong>🪙 {selected.coins} coins</strong>
+              <div>
+                <strong>{selected.username}</strong>
+                <p style={styles.email}>{selected.email}</p>
+              </div>
+              <strong>🪙 {selected.coins}</strong>
             </div>
 
             <label style={styles.label}>Amount</label>
-
             <input
               style={styles.input}
               type="number"
@@ -228,10 +220,7 @@ export default function OwnerPage() {
               onChange={(e) => setAmount(e.target.value)}
             />
 
-            <label style={styles.label}>
-              Reason for adjustment
-            </label>
-
+            <label style={styles.label}>Reason</label>
             <input
               style={styles.input}
               value={reason}
@@ -259,9 +248,8 @@ export default function OwnerPage() {
           </section>
         )}
 
-        {message && (
-          <p style={styles.success}>{message}</p>
-        )}
+        {error && <p style={styles.error}>{error}</p>}
+        {message && <p style={styles.success}>{message}</p>}
       </div>
     </main>
   );
@@ -342,6 +330,12 @@ const styles: Record<string, CSSProperties> = {
     textAlign: "left",
     cursor: "pointer",
   },
+  playerInfo: {
+    display: "grid",
+    gap: 5,
+    minWidth: 0,
+    overflowWrap: "anywhere",
+  },
   selected: {
     display: "flex",
     justifyContent: "space-between",
@@ -349,6 +343,12 @@ const styles: Record<string, CSSProperties> = {
     padding: 15,
     background: "#25203b",
     borderRadius: 10,
+    overflowWrap: "anywhere",
+  },
+  email: {
+    color: "#a5abc0",
+    fontSize: 12,
+    margin: "5px 0 0",
   },
   label: {
     display: "block",
@@ -385,12 +385,8 @@ const styles: Record<string, CSSProperties> = {
     color: "#9299b0",
     fontSize: 13,
   },
-  errorBox: {
-    padding: 14,
-    borderRadius: 10,
-    background: "#3b1820",
-    color: "#ffaaaa",
-    marginBottom: 18,
+  error: {
+    color: "#ff7777",
   },
   success: {
     color: "#54d69b",
