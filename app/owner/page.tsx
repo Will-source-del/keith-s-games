@@ -1,7 +1,7 @@
-
 "use client";
 
 import { useEffect, useState } from "react";
+import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
@@ -13,6 +13,7 @@ type Player = {
 
 export default function OwnerPage() {
   const router = useRouter();
+
   const [players, setPlayers] = useState<Player[]>([]);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Player | null>(null);
@@ -31,38 +32,52 @@ export default function OwnerPage() {
 
     if (error) {
       setError(error.message);
-      return;
+      setPlayers([]);
+      return false;
     }
 
     setError("");
-    setPlayers(data || []);
+    setPlayers((data || []) as Player[]);
+    return true;
   }
 
   useEffect(() => {
-    async function checkOwner() {
-      const { data: authData } = await supabase.auth.getUser();
+    let active = true;
 
-      if (!authData.user) {
+    async function checkOwner() {
+      const { data, error } = await supabase.auth.getUser();
+
+      if (!active) return;
+
+      if (error || !data.user) {
         router.replace("/login");
         return;
       }
 
-      const { data, error } = await supabase
-        .from("game_owners")
-        .select("user_id")
-        .eq("user_id", authData.user.id)
-        .maybeSingle();
+      const { data: playersData, error: ownerError } =
+        await supabase.rpc("owner_search_players", {
+          search_text: "",
+        });
 
-      if (error || !data) {
-        router.replace("/");
+      if (!active) return;
+
+      if (ownerError) {
+        setError(
+          "Owner access check failed: " + ownerError.message
+        );
+        setLoading(false);
         return;
       }
 
-      await searchPlayers("");
+      setPlayers((playersData || []) as Player[]);
       setLoading(false);
     }
 
     checkOwner();
+
+    return () => {
+      active = false;
+    };
   }, [router]);
 
   async function adjustCoins(direction: 1 | -1) {
@@ -70,7 +85,11 @@ export default function OwnerPage() {
 
     const value = Number(amount);
 
-    if (!Number.isSafeInteger(value) || value < 1 || value > 1000000) {
+    if (
+      !Number.isSafeInteger(value) ||
+      value < 1 ||
+      value > 1000000
+    ) {
       setError("Enter a whole number between 1 and 1,000,000.");
       return;
     }
@@ -92,10 +111,16 @@ export default function OwnerPage() {
       setError(error.message);
     } else {
       setMessage(
-        `${value} coins ${direction > 0 ? "given to" : "removed from"} ${selected.username}.`
+        `${value} coins ${
+          direction > 0 ? "given to" : "removed from"
+        } ${selected.username}.`
       );
 
-      setSelected({ ...selected, coins: Number(data) });
+      setSelected({
+        ...selected,
+        coins: Number(data),
+      });
+
       await searchPlayers(search);
     }
 
@@ -103,13 +128,19 @@ export default function OwnerPage() {
   }
 
   if (loading) {
-    return <main style={styles.page}>Checking owner access...</main>;
+    return (
+      <main style={styles.page}>
+        Checking owner access...
+      </main>
+    );
   }
 
   return (
     <main style={styles.page}>
       <div style={styles.container}>
-        <a href="/" style={styles.back}>← Back to games</a>
+        <a href="/" style={styles.back}>
+          ← Back to games
+        </a>
 
         <header style={styles.header}>
           <div>
@@ -117,19 +148,28 @@ export default function OwnerPage() {
             <h1>Owner Panel</h1>
             <p>Manage players and Slingshot Adventures coins.</p>
           </div>
+
           <div style={styles.ownerBadge}>OWNER</div>
         </header>
 
+        {error && (
+          <div style={styles.errorBox}>
+            {error}
+          </div>
+        )}
+
         <section style={styles.card}>
           <h2>Find a player</h2>
+
           <input
             style={styles.input}
             placeholder="Search by username..."
             value={search}
             onChange={(e) => {
-              setSearch(e.target.value);
-              searchPlayers(e.target.value);
+              const value = e.target.value;
+              setSearch(value);
               setSelected(null);
+              searchPlayers(value);
             }}
           />
 
@@ -154,11 +194,15 @@ export default function OwnerPage() {
                   <strong>{player.username}</strong>
                   <small>{player.player_id}</small>
                 </span>
+
                 <strong>🪙 {player.coins}</strong>
               </button>
             ))}
-            {players.length === 0 && (
-              <p style={styles.muted}>No players found.</p>
+
+            {players.length === 0 && !error && (
+              <p style={styles.muted}>
+                No players found.
+              </p>
             )}
           </div>
         </section>
@@ -166,12 +210,14 @@ export default function OwnerPage() {
         {selected && (
           <section style={styles.card}>
             <h2>Manage coins</h2>
+
             <div style={styles.selected}>
               <span>{selected.username}</span>
               <strong>🪙 {selected.coins} coins</strong>
             </div>
 
             <label style={styles.label}>Amount</label>
+
             <input
               style={styles.input}
               type="number"
@@ -182,7 +228,10 @@ export default function OwnerPage() {
               onChange={(e) => setAmount(e.target.value)}
             />
 
-            <label style={styles.label}>Reason for adjustment</label>
+            <label style={styles.label}>
+              Reason for adjustment
+            </label>
+
             <input
               style={styles.input}
               value={reason}
@@ -196,27 +245,29 @@ export default function OwnerPage() {
                 onClick={() => adjustCoins(1)}
                 style={styles.give}
               >
-                Give Coins
+                {working ? "Please wait..." : "Give Coins"}
               </button>
+
               <button
                 disabled={working}
                 onClick={() => adjustCoins(-1)}
                 style={styles.remove}
               >
-                Remove Coins
+                {working ? "Please wait..." : "Remove Coins"}
               </button>
             </div>
           </section>
         )}
 
-        {error && <p style={styles.error}>{error}</p>}
-        {message && <p style={styles.success}>{message}</p>}
+        {message && (
+          <p style={styles.success}>{message}</p>
+        )}
       </div>
     </main>
   );
 }
 
-const styles: Record<string, React.CSSProperties> = {
+const styles: Record<string, CSSProperties> = {
   page: {
     minHeight: "100vh",
     background: "#090b14",
@@ -224,8 +275,15 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 24,
     fontFamily: "Inter, Arial, sans-serif",
   },
-  container: { maxWidth: 760, margin: "25px auto" },
-  back: { color: "#b69aff", textDecoration: "none", fontWeight: 700 },
+  container: {
+    maxWidth: 760,
+    margin: "25px auto",
+  },
+  back: {
+    color: "#b69aff",
+    textDecoration: "none",
+    fontWeight: 700,
+  },
   header: {
     display: "flex",
     justifyContent: "space-between",
@@ -233,7 +291,12 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 15,
     margin: "35px 0 25px",
   },
-  eyebrow: { color: "#a78bfa", fontSize: 11, fontWeight: 900, letterSpacing: 2 },
+  eyebrow: {
+    color: "#a78bfa",
+    fontSize: 11,
+    fontWeight: 900,
+    letterSpacing: 2,
+  },
   ownerBadge: {
     padding: "9px 14px",
     background: "#3b2d60",
@@ -260,7 +323,11 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 10,
     outline: "none",
   },
-  playerList: { display: "grid", gap: 8, marginTop: 15 },
+  playerList: {
+    display: "grid",
+    gap: 8,
+    marginTop: 15,
+  },
   player: {
     display: "flex",
     justifyContent: "space-between",
@@ -283,8 +350,17 @@ const styles: Record<string, React.CSSProperties> = {
     background: "#25203b",
     borderRadius: 10,
   },
-  label: { display: "block", marginTop: 17, fontSize: 13, fontWeight: 700 },
-  actions: { display: "flex", gap: 10, marginTop: 20 },
+  label: {
+    display: "block",
+    marginTop: 17,
+    fontSize: 13,
+    fontWeight: 700,
+  },
+  actions: {
+    display: "flex",
+    gap: 10,
+    marginTop: 20,
+  },
   give: {
     flex: 1,
     padding: 14,
@@ -305,7 +381,18 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 800,
     cursor: "pointer",
   },
-  muted: { color: "#9299b0", fontSize: 13 },
-  error: { color: "#ff7777" },
-  success: { color: "#54d69b" },
+  muted: {
+    color: "#9299b0",
+    fontSize: 13,
+  },
+  errorBox: {
+    padding: 14,
+    borderRadius: 10,
+    background: "#3b1820",
+    color: "#ffaaaa",
+    marginBottom: 18,
+  },
+  success: {
+    color: "#54d69b",
+  },
 };
