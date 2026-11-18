@@ -1,17 +1,26 @@
-
 "use client";
+
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 import { loadGameSave, saveGame } from "@/lib/game-saves";
 
-type Skin = {
-  id: string;
-  name: string;
-  emoji: string;
-  price: number;
-  colour: string;
+type Material = "wood" | "glass" | "stone";
+type Body = {
+  id: number;
+  kind: "block" | "pig" | "bird";
+  material?: Material;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  vx: number;
+  vy: number;
+  hp: number;
+  alive: boolean;
+  angle: number;
+  radius?: number;
 };
 
 type SavedData = {
@@ -22,8 +31,14 @@ type SavedData = {
   bestScores?: Record<number, number>;
 };
 
-const skins: Skin[] = [
-  { id: "classic", name: "Classic", emoji: "🐦", price: 0, colour: "#b87943" },
+const W = 960;
+const H = 540;
+const GROUND = 465;
+const SLING = { x: 155, y: 360 };
+const MAX_PULL = 115;
+
+const skins = [
+  { id: "classic", name: "Classic", emoji: "🐦", price: 0, colour: "#bd4938" },
   { id: "gold", name: "Golden", emoji: "🌟", price: 150, colour: "#f5c542" },
   { id: "ice", name: "Frost", emoji: "❄️", price: 250, colour: "#62c9ed" },
   { id: "fire", name: "Inferno", emoji: "🔥", price: 350, colour: "#ff714d" },
@@ -31,12 +46,125 @@ const skins: Skin[] = [
   { id: "nature", name: "Nature", emoji: "🌿", price: 650, colour: "#63c985" },
 ];
 
-const levelCount = 10;
+const materialStats: Record<Material, { hp: number; colour: string }> = {
+  wood: { hp: 3, colour: "#b77942" },
+  glass: { hp: 1, colour: "#7ed8e9" },
+  stone: { hp: 7, colour: "#858b98" },
+};
+
+let nextId = 1;
+
+function block(
+  material: Material,
+  x: number,
+  y: number,
+  w: number,
+  h: number
+): Body {
+  return {
+    id: nextId++,
+    kind: "block",
+    material,
+    x,
+    y,
+    w,
+    h,
+    vx: 0,
+    vy: 0,
+    hp: materialStats[material].hp,
+    alive: true,
+    angle: 0,
+  };
+}
+
+function pig(x: number, y: number): Body {
+  return {
+    id: nextId++,
+    kind: "pig",
+    x,
+    y,
+    w: 34,
+    h: 34,
+    radius: 17,
+    vx: 0,
+    vy: 0,
+    hp: 2,
+    alive: true,
+    angle: 0,
+  };
+}
+
+function makeLevel(level: number): Body[] {
+  nextId = 1;
+  const bodies: Body[] = [];
+
+  const base = 620 + (level - 1) * 12;
+  const width = 180 + Math.min(level * 8, 90);
+  const towerHeight = 90 + Math.min(level * 12, 130);
+
+  // Main wooden fortress.
+  bodies.push(block("wood", base, GROUND - 15, width, 18));
+  bodies.push(block("wood", base + 8, GROUND - towerHeight, 18, towerHeight - 15));
+  bodies.push(block("wood", base + width - 26, GROUND - towerHeight, 18, towerHeight - 15));
+  bodies.push(block("wood", base, GROUND - towerHeight - 15, width, 18));
+
+  // Upper tower.
+  bodies.push(block("glass", base + 28, GROUND - towerHeight - 55, 18, 40));
+  bodies.push(block("glass", base + width - 46, GROUND - towerHeight - 55, 18, 40));
+  bodies.push(block("wood", base + 20, GROUND - towerHeight - 68, width - 40, 15));
+
+  // Stone protection increases on later levels.
+  if (level >= 3) {
+    bodies.push(block("stone", base + 45, GROUND - 48, 48, 32));
+  }
+
+  if (level >= 5) {
+    bodies.push(block("stone", base + width - 90, GROUND - towerHeight - 105, 55, 25));
+  }
+
+  if (level >= 7) {
+    bodies.push(block("wood", base + 35, GROUND - towerHeight - 125, 18, 55));
+    bodies.push(block("wood", base + width - 53, GROUND - towerHeight - 125, 18, 55));
+    bodies.push(block("glass", base + 35, GROUND - towerHeight - 140, width - 70, 15));
+  }
+
+  const pigCount = Math.min(1 + Math.floor((level - 1) / 2), 5);
+
+  for (let i = 0; i < pigCount; i++) {
+    const px = base + 35 + (i % 3) * 48;
+    const py = GROUND - 35 - (i >= 3 ? 70 : 0);
+    bodies.push(pig(px, py));
+  }
+
+  // Extra obstacle wall on higher levels.
+  if (level >= 2) {
+    bodies.push(block("wood", 420, GROUND - 95, 20, 95));
+    bodies.push(block("wood", 480, GROUND - 95, 20, 95));
+    bodies.push(block("glass", 420, GROUND - 110, 80, 15));
+  }
+
+  if (level >= 4) {
+    bodies.push(block("stone", 520, GROUND - 45, 35, 35));
+  }
+
+  return bodies;
+}
 
 export default function SlingshotPage() {
-  const gameRef = useRef<SVGSVGElement>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const worldRef = useRef<Body[]>([]);
+  const animationRef = useRef<number | null>(null);
+  const draggingRef = useRef(false);
+  const launchedRef = useRef(false);
+  const pullRef = useRef({ x: SLING.x, y: SLING.y });
+  const birdRef = useRef<Body | null>(null);
+  const birdQueueRef = useRef(3);
+  const abilityUsedRef = useRef(false);
+  const abilityRef = useRef(false);
+  const scoreRef = useRef(0);
+  const levelRef = useRef(1);
+  const completedRef = useRef(false);
+  const lastTimeRef = useRef(0);
 
   const [coins, setCoins] = useState(0);
   const [userId, setUserId] = useState<string | null>(null);
@@ -51,18 +179,16 @@ export default function SlingshotPage() {
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
-
-  const [dragging, setDragging] = useState(false);
-  const [projectile, setProjectile] = useState({ x: 150, y: 310 });
-  const [launched, setLaunched] = useState(false);
-  const [shots, setShots] = useState(0);
   const [score, setScore] = useState(0);
-  const [targetHit, setTargetHit] = useState(false);
-  const [levelWon, setLevelWon] = useState(false);
-  const [reward, setReward] = useState(0);
-  const [message, setMessage] = useState("Drag the bird backwards, then release!");
+  const [shots, setShots] = useState(0);
+  const [birdsLeft, setBirdsLeft] = useState(3);
+  const [message, setMessage] = useState("Pull the bird backwards to aim.");
+  const [won, setWon] = useState(false);
+  const [lost, setLost] = useState(false);
+  const [ability, setAbility] = useState("Ready");
+  const [showTrajectory, setShowTrajectory] = useState(true);
 
-  const currentSkin = skins.find((skin) => skin.id === selectedSkin) ?? skins[0];
+  const skin = skins.find((s) => s.id === selectedSkin) ?? skins[0];
 
   const refreshCoins = useCallback(async () => {
     const { data: auth } = await supabase.auth.getUser();
@@ -82,7 +208,6 @@ export default function SlingshotPage() {
       .single();
 
     if (error) throw error;
-
     setCoins(Number(data.slingshot_coins ?? 0));
   }, []);
 
@@ -91,7 +216,7 @@ export default function SlingshotPage() {
       setSaving(true);
       await saveGame("slingshot", data);
     } catch (error) {
-      console.error("Could not save Slingshot progress:", error);
+      console.error("Save failed:", error);
     } finally {
       setSaving(false);
     }
@@ -100,10 +225,9 @@ export default function SlingshotPage() {
   useEffect(() => {
     let active = true;
 
-    async function loadProgress() {
+    async function load() {
       try {
         await refreshCoins();
-
         const data = (await loadGameSave("slingshot")) as SavedData | null;
 
         if (!active) return;
@@ -116,40 +240,34 @@ export default function SlingshotPage() {
           setBestScores(data.bestScores ?? {});
         }
       } catch (error) {
-        console.error("Could not load Slingshot progress:", error);
-        setNotice("Could not load your account balance. Please refresh.");
+        console.error(error);
+        setNotice("Could not load your saved game or coin balance.");
       } finally {
         if (active) setLoaded(true);
       }
     }
 
-    loadProgress();
+    load();
 
     return () => {
       active = false;
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (saveTimer.current) clearTimeout(saveTimer.current);
     };
   }, [refreshCoins]);
 
   useEffect(() => {
     if (!loaded) return;
 
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-
-    saveTimer.current = setTimeout(() => {
-      saveProgress({
+    const timeout = setTimeout(() => {
+      void saveProgress({
         unlockedLevels,
         completedLevels,
         unlockedSkins,
         selectedSkin,
         bestScores,
       });
-    }, 700);
+    }, 600);
 
-    return () => {
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-    };
+    return () => clearTimeout(timeout);
   }, [
     loaded,
     unlockedLevels,
@@ -160,283 +278,873 @@ export default function SlingshotPage() {
     saveProgress,
   ]);
 
-  const resetShot = () => {
-    if (timerRef.current) clearInterval(timerRef.current);
-    timerRef.current = null;
-    setProjectile({ x: 150, y: 310 });
-    setDragging(false);
-    setLaunched(false);
-    setTargetHit(false);
-  };
+  const createBird = useCallback(() => {
+    const bird: Body = {
+      id: nextId++,
+      kind: "bird",
+      x: SLING.x,
+      y: SLING.y,
+      w: 34,
+      h: 34,
+      radius: 17,
+      vx: 0,
+      vy: 0,
+      hp: 1,
+      alive: true,
+      angle: 0,
+    };
 
-  const startLevel = (level: number) => {
-    if (level > unlockedLevels || level < 1) return;
+    birdRef.current = bird;
+    pullRef.current = { ...SLING };
+    launchedRef.current = false;
+    draggingRef.current = false;
+    abilityUsedRef.current = false;
+    abilityRef.current = false;
+    setAbility("Ready");
+  }, []);
 
-    resetShot();
+  const startLevel = useCallback((level: number) => {
+    if (level < 1 || level > unlockedLevels) return;
+
+    if (animationRef.current) cancelAnimationFrame(animationRef.current);
+
+    levelRef.current = level;
+    worldRef.current = makeLevel(level);
+    birdQueueRef.current = 3 + Math.floor((level - 1) / 3);
+    scoreRef.current = 0;
+    completedRef.current = false;
+
     setActiveLevel(level);
-    setShots(0);
     setScore(0);
-    setLevelWon(false);
-    setReward(0);
-    setMessage("Drag the bird backwards, then release!");
+    setShots(0);
+    setBirdsLeft(birdQueueRef.current);
+    setWon(false);
+    setLost(false);
+    setMessage("Pull the bird backwards to aim.");
     setScreen("game");
-  };
+    createBird();
+  }, [unlockedLevels, createBird]);
 
-  const getPointerPosition = (event: React.PointerEvent<SVGSVGElement>) => {
-    const rect = gameRef.current?.getBoundingClientRect();
-    if (!rect) return { x: 150, y: 310 };
-
+  const pointerPosition = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
     return {
-      x: ((event.clientX - rect.left) / rect.width) * 800,
-      y: ((event.clientY - rect.top) / rect.height) * 450,
+      x: ((event.clientX - rect.left) / rect.width) * W,
+      y: ((event.clientY - rect.top) / rect.height) * H,
     };
   };
 
-  const handlePointerDown = (event: React.PointerEvent<SVGSVGElement>) => {
-    if (launched || levelWon) return;
+  const startDrag = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!birdRef.current || launchedRef.current || won || lost) return;
 
-    const point = getPointerPosition(event);
-    const distance = Math.hypot(
-      point.x - projectile.x,
-      point.y - projectile.y
-    );
+    const p = pointerPosition(event);
+    const bird = birdRef.current;
 
-    if (distance < 65) {
+    if (Math.hypot(p.x - bird.x, p.y - bird.y) < 55) {
       event.currentTarget.setPointerCapture(event.pointerId);
-      setDragging(true);
+      draggingRef.current = true;
+      setMessage("Aim carefully. The dotted line shows the predicted flight.");
     }
   };
 
-  const handlePointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
-    if (!dragging || launched) return;
+  const moveDrag = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!draggingRef.current) return;
 
-    const point = getPointerPosition(event);
-    const dx = point.x - 150;
-    const dy = point.y - 310;
+    const p = pointerPosition(event);
+    const dx = p.x - SLING.x;
+    const dy = p.y - SLING.y;
     const distance = Math.hypot(dx, dy);
-    const maxDistance = 95;
-    const scale = distance > maxDistance ? maxDistance / distance : 1;
+    const scale = distance > MAX_PULL ? MAX_PULL / distance : 1;
 
-    setProjectile({
-      x: 150 + dx * scale,
-      y: 310 + dy * scale,
-    });
+    pullRef.current = {
+      x: SLING.x + dx * scale,
+      y: SLING.y + dy * scale,
+    };
+
+    if (pullRef.current.x > SLING.x + 10) {
+      pullRef.current.x = SLING.x + 10;
+    }
+
+    if (birdRef.current) {
+      birdRef.current.x = pullRef.current.x;
+      birdRef.current.y = pullRef.current.y;
+    }
   };
 
-  const finishLevel = async (finalScore: number, finalShots: number) => {
-    if (levelWon || busy) return;
+  const awardLevel = async () => {
+    if (completedRef.current) return;
+    completedRef.current = true;
 
-    setBusy(true);
-    setLevelWon(true);
-    setShots(finalShots);
+    setWon(true);
+    setMessage("Fortress destroyed!");
+
+    const finalScore = scoreRef.current;
     setScore(finalScore);
+
+    setCompletedLevels((previous) =>
+      previous.includes(levelRef.current)
+        ? previous
+        : [...previous, levelRef.current]
+    );
+
+    setUnlockedLevels((previous) =>
+      Math.max(previous, Math.min(10, levelRef.current + 1))
+    );
+
+    setBestScores((previous) => ({
+      ...previous,
+      [levelRef.current]: Math.max(
+        previous[levelRef.current] ?? 0,
+        finalScore
+      ),
+    }));
 
     try {
       const { data, error } = await supabase.rpc(
         "complete_slingshot_level",
-        { target_level: activeLevel }
+        { target_level: levelRef.current }
       );
 
       if (error) throw error;
 
       const earned = Number(data ?? 0);
-
-      setReward(earned);
-
-      setCompletedLevels((previous) =>
-        previous.includes(activeLevel)
-          ? previous
-          : [...previous, activeLevel]
+      setNotice(
+        earned > 0
+          ? `Level completed. ${earned} coins awarded!`
+          : "Level completed. This level's coin reward was already collected."
       );
-
-      setUnlockedLevels((previous) =>
-        Math.max(previous, Math.min(levelCount, activeLevel + 1))
-      );
-
-      setBestScores((previous) => ({
-        ...previous,
-        [activeLevel]: Math.max(previous[activeLevel] ?? 0, finalScore),
-      }));
 
       await refreshCoins();
-
-      setMessage(
-        earned > 0
-          ? `Level complete! You earned ${earned} coins.`
-          : "Level complete! You have already collected this level's reward."
-      );
     } catch (error) {
-      console.error("Could not complete level:", error);
-      setNotice("Your level was completed, but the coin reward could not be saved. Please try again.");
-      setReward(0);
-    } finally {
-      setBusy(false);
+      console.error(error);
+      setNotice("Level completed, but the coin reward could not be saved.");
     }
   };
 
-  const launch = () => {
-    if (!dragging || launched || levelWon) return;
+  const releaseBird = () => {
+    if (!draggingRef.current || !birdRef.current) return;
 
-    setDragging(false);
-    setLaunched(true);
-    setShots((previous) => previous + 1);
+    draggingRef.current = false;
 
-    const dx = 150 - projectile.x;
-    const dy = 310 - projectile.y;
+    const bird = birdRef.current;
+    const dx = SLING.x - bird.x;
+    const dy = SLING.y - bird.y;
 
-    let x = projectile.x;
-    let y = projectile.y;
-
-    // Lower launch speed for slower, more controllable shots.
-    let vx = dx * 0.095;
-    let vy = dy * 0.095;
-
-    const targetX = 600 - (activeLevel - 1) * 12;
-    const targetY = 315;
-    const strength = Math.hypot(dx, dy);
-    const nextShots = shots + 1;
-    const nextScore = score + 500 + Math.round(strength * 3);
-
-    setMessage("The bird is flying...");
-
-    if (timerRef.current) clearInterval(timerRef.current);
-
-    timerRef.current = setInterval(() => {
-      x += vx;
-      y += vy;
-      vy += 0.19;
-      vx *= 0.998;
-
-      setProjectile({ x, y });
-
-      const distance = Math.hypot(x - targetX, y - targetY);
-
-      if (distance < 48 && !targetHit) {
-        setTargetHit(true);
-        if (timerRef.current) clearInterval(timerRef.current);
-        timerRef.current = null;
-        setMessage("Target hit!");
-        void finishLevel(nextScore, nextShots);
-        return;
-      }
-
-      if (x > 820 || y > 450 || y < -100 || x < -50) {
-        if (timerRef.current) clearInterval(timerRef.current);
-        timerRef.current = null;
-        setLaunched(false);
-        setProjectile({ x: 150, y: 310 });
-        setMessage("Missed! Take your time and try again.");
-      }
-    }, 24);
-  };
-
-  const buySkin = async (skin: Skin) => {
-    if (busy) return;
-
-    if (unlockedSkins.includes(skin.id)) {
-      setSelectedSkin(skin.id);
+    if (Math.hypot(dx, dy) < 10) {
+      bird.x = SLING.x;
+      bird.y = SLING.y;
       return;
     }
 
-    if (coins < skin.price) {
-      setNotice("You do not have enough coins for this skin.");
+    bird.vx = dx * 0.17;
+    bird.vy = dy * 0.17;
+    launchedRef.current = true;
+
+    setShots((n) => n + 1);
+    birdQueueRef.current -= 1;
+    setBirdsLeft(birdQueueRef.current);
+    setMessage("Bird launched! Tap the ability button for its special move.");
+  };
+
+  const activateAbility = () => {
+    const bird = birdRef.current;
+
+    if (!bird || !launchedRef.current || abilityUsedRef.current) return;
+
+    abilityUsedRef.current = true;
+    abilityRef.current = true;
+
+    // Each skin currently has a distinct simple special effect.
+    if (selectedSkin === "ice") {
+      bird.vx *= 1.8;
+      bird.vy *= 1.8;
+      setAbility("Ice boost used");
+    } else if (selectedSkin === "fire") {
+      const targets = worldRef.current.filter(
+        (b) => b.alive && b.kind !== "bird" &&
+          Math.hypot(b.x - bird.x, b.y - bird.y) < 125
+      );
+
+      targets.forEach((target) => {
+        target.hp -= 3;
+        target.vx += (target.x - bird.x) * 0.07;
+        target.vy -= 5;
+      });
+
+      setAbility("Fire burst used");
+    } else if (selectedSkin === "gold") {
+      bird.vx *= 1.5;
+      bird.vy *= 1.5;
+      setAbility("Golden dash used");
+    } else if (selectedSkin === "nature") {
+      bird.vy -= 8;
+      setAbility("Nature jump used");
+    } else {
+      bird.vx *= 1.3;
+      bird.vy *= 1.3;
+      setAbility("Speed boost used");
+    }
+
+    setMessage("Special ability activated!");
+  };
+
+  const buySkin = async (item: (typeof skins)[number]) => {
+    if (busy) return;
+
+    if (unlockedSkins.includes(item.id)) {
+      setSelectedSkin(item.id);
       return;
     }
 
     if (!userId) {
-      setNotice("Sign in to purchase and save skins.");
+      setNotice("Sign in to purchase skins.");
+      return;
+    }
+
+    if (coins < item.price) {
+      setNotice("You do not have enough coins.");
       return;
     }
 
     setBusy(true);
-    setNotice("");
 
     try {
       const { data, error } = await supabase.rpc(
         "spend_slingshot_coins",
-        { coin_amount: skin.price }
+        { coin_amount: item.price }
       );
 
       if (error) throw error;
 
       setCoins(Number(data));
-
-      setUnlockedSkins((previous) => [...previous, skin.id]);
-      setSelectedSkin(skin.id);
-      setNotice(`${skin.name} skin purchased successfully.`);
+      setUnlockedSkins((old) => [...old, item.id]);
+      setSelectedSkin(item.id);
+      setNotice(`${item.name} unlocked.`);
     } catch (error) {
-      console.error("Could not purchase skin:", error);
-      setNotice("Purchase failed. Check your coin balance and try again.");
+      console.error(error);
+      setNotice("Purchase failed.");
       await refreshCoins();
     } finally {
       setBusy(false);
     }
   };
 
-  const nextLevel = () => {
-    if (activeLevel < levelCount) {
-      startLevel(activeLevel + 1);
-    } else {
-      setScreen("levels");
-    }
+  // Main canvas engine: gravity, collisions, damage, debris and aiming scope.
+  useEffect(() => {
+    if (screen !== "game") return;
+
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
+
+    let running = true;
+
+    const roundedRect = (
+      x: number,
+      y: number,
+      w: number,
+      h: number,
+      r: number
+    ) => {
+      ctx.beginPath();
+      ctx.roundRect(x, y, w, h, r);
+    };
+
+    const drawBird = (x: number, y: number, angle: number) => {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+
+      ctx.fillStyle = skin.colour;
+      ctx.strokeStyle = "#542d27";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 0, 18, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Tail feathers.
+      ctx.fillStyle = "#8c332b";
+      ctx.beginPath();
+      ctx.moveTo(-14, 3);
+      ctx.lineTo(-29, -8);
+      ctx.lineTo(-24, 5);
+      ctx.lineTo(-30, 14);
+      ctx.closePath();
+      ctx.fill();
+
+      // White belly.
+      ctx.fillStyle = "#f7e8d2";
+      ctx.beginPath();
+      ctx.ellipse(4, 9, 10, 6, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Eyes and pupils.
+      ctx.fillStyle = "white";
+      ctx.beginPath();
+      ctx.arc(5, -6, 7, 0, Math.PI * 2);
+      ctx.arc(15, -5, 6, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#1c1c25";
+      ctx.beginPath();
+      ctx.arc(7, -6, 2.8, 0, Math.PI * 2);
+      ctx.arc(16, -5, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Beak.
+      ctx.fillStyle = "#f3b53e";
+      ctx.beginPath();
+      ctx.moveTo(15, 1);
+      ctx.lineTo(29, 5);
+      ctx.lineTo(15, 10);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.restore();
+    };
+
+    const drawPig = (x: number, y: number, radius: number) => {
+      ctx.save();
+      ctx.translate(x, y);
+
+      ctx.fillStyle = "#65bd4b";
+      ctx.strokeStyle = "#347a37";
+      ctx.lineWidth = 3;
+
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Ears.
+      ctx.fillStyle = "#65bd4b";
+      ctx.beginPath();
+      ctx.arc(-11, -14, 7, 0, Math.PI * 2);
+      ctx.arc(11, -14, 7, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Snout.
+      ctx.fillStyle = "#a1dc79";
+      ctx.beginPath();
+      ctx.ellipse(0, 6, 11, 8, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#36713a";
+      ctx.beginPath();
+      ctx.arc(-4, 6, 2, 0, Math.PI * 2);
+      ctx.arc(4, 6, 2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "white";
+      ctx.beginPath();
+      ctx.arc(-7, -6, 5, 0, Math.PI * 2);
+      ctx.arc(7, -6, 5, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#1d2920";
+      ctx.beginPath();
+      ctx.arc(-6, -6, 2, 0, Math.PI * 2);
+      ctx.arc(8, -6, 2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    };
+
+    const drawBlock = (body: Body) => {
+      ctx.save();
+      ctx.translate(body.x + body.w / 2, body.y + body.h / 2);
+      ctx.rotate(body.angle);
+
+      const material = body.material ?? "wood";
+      const colour = materialStats[material].colour;
+
+      ctx.fillStyle = colour;
+      ctx.strokeStyle =
+        material === "wood" ? "#704325" :
+        material === "glass" ? "#378fa8" : "#555b67";
+      ctx.lineWidth = 3;
+
+      roundedRect(-body.w / 2, -body.h / 2, body.w, body.h, 4);
+      ctx.fill();
+      ctx.stroke();
+
+      if (material === "wood") {
+        ctx.strokeStyle = "#e2b27b";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(-body.w / 2 + 5, -body.h / 2 + 5);
+        ctx.lineTo(body.w / 2 - 5, body.h / 2 - 5);
+        ctx.stroke();
+
+        ctx.strokeStyle = "#8d542f";
+        ctx.beginPath();
+        ctx.moveTo(-body.w / 2 + 5, body.h / 2 - 5);
+        ctx.lineTo(body.w / 2 - 5, -body.h / 2 + 5);
+        ctx.stroke();
+      }
+
+      if (material === "glass") {
+        ctx.strokeStyle = "#e4fbff";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(-body.w / 2 + 5, -body.h / 2 + 5);
+        ctx.lineTo(body.w / 2 - 5, body.h / 2 - 5);
+        ctx.stroke();
+      }
+
+      if (material === "stone") {
+        ctx.strokeStyle = "#aeb4c0";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(-body.w / 2 + 5, 0);
+        ctx.lineTo(body.w / 2 - 5, 0);
+        ctx.stroke();
+      }
+
+      // Damage cracks.
+      if (body.hp <= 2) {
+        ctx.strokeStyle = "#29252a";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(-5, -body.h / 2);
+        ctx.lineTo(0, 0);
+        ctx.lineTo(-8, body.h / 2);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    };
+
+    const drawBackground = () => {
+      const sky = ctx.createLinearGradient(0, 0, 0, H);
+      sky.addColorStop(0, "#75c5f3");
+      sky.addColorStop(0.7, "#d6f0ff");
+      sky.addColorStop(1, "#f3f3d0");
+
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, W, H);
+
+      // Sun.
+      ctx.fillStyle = "#ffe8a0";
+      ctx.beginPath();
+      ctx.arc(820, 82, 40, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Distant hills.
+      ctx.fillStyle = "#9bcf9b";
+      ctx.beginPath();
+      ctx.moveTo(0, 380);
+      ctx.quadraticCurveTo(160, 220, 340, 370);
+      ctx.quadraticCurveTo(530, 220, 720, 365);
+      ctx.quadraticCurveTo(850, 280, 960, 350);
+      ctx.lineTo(960, H);
+      ctx.lineTo(0, H);
+      ctx.fill();
+
+      // Foreground hills.
+      ctx.fillStyle = "#6eaf66";
+      ctx.beginPath();
+      ctx.moveTo(0, 425);
+      ctx.quadraticCurveTo(240, 370, 460, 430);
+      ctx.quadraticCurveTo(720, 370, 960, 420);
+      ctx.lineTo(960, H);
+      ctx.lineTo(0, H);
+      ctx.fill();
+
+      ctx.fillStyle = "#6c9e45";
+      ctx.fillRect(0, GROUND, W, H - GROUND);
+
+      ctx.fillStyle = "#9bc96a";
+      ctx.fillRect(0, GROUND, W, 7);
+
+      // Clouds.
+      ctx.fillStyle = "rgba(255,255,255,.55)";
+      for (const [x, y] of [[170, 95], [390, 145], [680, 120]] as number[][]) {
+        ctx.beginPath();
+        ctx.arc(x, y, 18, 0, Math.PI * 2);
+        ctx.arc(x + 22, y - 9, 24, 0, Math.PI * 2);
+        ctx.arc(x + 49, y, 17, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    };
+
+    const drawSlingshot = () => {
+      // Back fork.
+      ctx.lineCap = "round";
+      ctx.strokeStyle = "#724326";
+      ctx.lineWidth = 17;
+      ctx.beginPath();
+      ctx.moveTo(133, 465);
+      ctx.lineTo(147, 345);
+      ctx.lineTo(170, 465);
+      ctx.stroke();
+
+      ctx.strokeStyle = "#bd8753";
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.moveTo(147, 345);
+      ctx.lineTo(147, 465);
+      ctx.stroke();
+
+      // Front fork.
+      ctx.strokeStyle = "#754729";
+      ctx.lineWidth = 15;
+      ctx.beginPath();
+      ctx.moveTo(165, 465);
+      ctx.lineTo(178, 345);
+      ctx.stroke();
+
+      // Elastic bands.
+      const p = pullRef.current;
+      ctx.strokeStyle = "#553a29";
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.moveTo(147, 345);
+      ctx.lineTo(p.x, p.y);
+      ctx.lineTo(178, 345);
+      ctx.stroke();
+    };
+
+    const drawScope = () => {
+      if (!draggingRef.current || !showTrajectory) return;
+
+      const p = pullRef.current;
+      let x = p.x;
+      let y = p.y;
+      let vx = (SLING.x - p.x) * 0.17;
+      let vy = (SLING.y - p.y) * 0.17;
+
+      // Predict the flight path using the same gravity as the game.
+      for (let i = 0; i < 34; i++) {
+        x += vx * 0.85;
+        y += vy * 0.85;
+        vy += 0.42;
+        vx *= 0.997;
+
+        if (y > GROUND || x > W || y < 0) break;
+
+        ctx.fillStyle = `rgba(40,55,65,${0.75 - i * 0.016})`;
+        ctx.beginPath();
+        ctx.arc(x, y, Math.max(2, 5 - i * 0.08), 0, Math.PI * 2);
+        ctx.fill();
+
+        if (i % 4 === 0) {
+          ctx.strokeStyle = "rgba(255,255,255,.65)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.arc(x, y, 8, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+
+      // Aim strength indicator.
+      const power = Math.min(
+        100,
+        Math.round(
+          Math.hypot(SLING.x - p.x, SLING.y - p.y) / MAX_PULL * 100
+        )
+      );
+
+      ctx.fillStyle = "rgba(20,25,35,.7)";
+      roundedRect(25, 25, 160, 40, 9);
+      ctx.fill();
+
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 13px Arial";
+      ctx.fillText(`POWER ${power}%`, 38, 50);
+
+      ctx.fillStyle = "#f0c45f";
+      ctx.fillRect(105, 41, 65 * power / 100, 9);
+    };
+
+    const collideBirdWithBlock = (bird: Body, b: Body) => {
+      if (!b.alive || b.kind !== "block") return;
+
+      const nearestX = Math.max(b.x, Math.min(bird.x, b.x + b.w));
+      const nearestY = Math.max(b.y, Math.min(bird.y, b.y + b.h));
+      const dx = bird.x - nearestX;
+      const dy = bird.y - nearestY;
+
+      if (dx * dx + dy * dy < (bird.radius ?? 17) ** 2) {
+        const impact = Math.hypot(bird.vx, bird.vy);
+
+        if (impact > 1.5) {
+          b.hp -= Math.max(1, Math.floor(impact / 7));
+          b.vx += bird.vx * 0.22;
+          b.vy += bird.vy * 0.16 - 2;
+          bird.vx *= 0.55;
+          bird.vy *= 0.55;
+
+          if (b.hp <= 0) {
+            b.alive = false;
+            scoreRef.current += b.material === "stone" ? 250 : 150;
+            setScore(scoreRef.current);
+          }
+        }
+
+        if (impact > 2.5) {
+          bird.vx *= 0.72;
+          bird.vy *= 0.72;
+        }
+      }
+    };
+
+    const updateWorld = (dt: number) => {
+      const bodies = worldRef.current;
+      const bird = birdRef.current;
+      const step = Math.min(dt / 16.67, 2);
+
+      for (const b of bodies) {
+        if (!b.alive) continue;
+
+        b.vy += 0.42 * step;
+        b.x += b.vx * step;
+        b.y += b.vy * step;
+
+        b.vx *= Math.pow(0.992, step);
+        b.vy *= Math.pow(0.997, step);
+
+        if (b.kind === "block" || b.kind === "pig") {
+          if (b.y + b.h > GROUND) {
+            b.y = GROUND - b.h;
+            b.vy *= -0.15;
+            b.vx *= 0.85;
+          }
+
+          if (b.x < 0) {
+            b.x = 0;
+            b.vx *= -0.3;
+          }
+          if (b.x + b.w > W) {
+            b.x = W - b.w;
+            b.vx *= -0.3;
+          }
+        }
+
+        if (b.kind === "pig" && Math.abs(b.vx) + Math.abs(b.vy) > 3) {
+          b.hp -= 0.025 * step;
+          if (b.hp <= 0) {
+            b.alive = false;
+            scoreRef.current += 500;
+            setScore(scoreRef.current);
+          }
+        }
+      }
+
+      // Basic block-to-block collision and weight transfer.
+      const blocks = bodies.filter((b) => b.alive && b.kind === "block");
+
+      for (let i = 0; i < blocks.length; i++) {
+        for (let j = i + 1; j < blocks.length; j++) {
+          const a = blocks[i];
+          const b = blocks[j];
+
+          const overlapX =
+            Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+          const overlapY =
+            Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+
+          if (overlapX > 0 && overlapY > 0) {
+            if (overlapY < overlapX) {
+              const push = overlapY / 2;
+              if (a.y < b.y) {
+                a.y -= push;
+                b.y += push;
+              } else {
+                a.y += push;
+                b.y -= push;
+              }
+
+              const impact = Math.abs(a.vy - b.vy);
+              if (impact > 3) {
+                a.hp -= impact * 0.08;
+                b.hp -= impact * 0.08;
+              }
+
+              const velocity = a.vy;
+              a.vy = b.vy * 0.35;
+              b.vy = velocity * 0.35;
+              a.vx += b.vx * 0.04;
+              b.vx += a.vx * 0.04;
+            }
+          }
+        }
+      }
+
+      // Birds damage blocks and pigs.
+      if (bird?.alive && launchedRef.current) {
+        for (const b of bodies) {
+          if (!b.alive) continue;
+
+          if (b.kind === "block") {
+            collideBirdWithBlock(bird, b);
+          }
+
+          if (b.kind === "pig") {
+            const distance = Math.hypot(
+              bird.x - (b.x + b.w / 2),
+              bird.y - (b.y + b.h / 2)
+            );
+
+            if (distance < 30) {
+              b.alive = false;
+              scoreRef.current += 500;
+              setScore(scoreRef.current);
+              bird.vx *= 0.65;
+              bird.vy *= 0.65;
+            }
+          }
+        }
+
+        if (bird.y > GROUND - 18) {
+          bird.y = GROUND - 18;
+          bird.vy *= -0.25;
+          bird.vx *= 0.7;
+        }
+
+        if (
+          bird.x < -50 ||
+          bird.x > W + 50 ||
+          bird.y > H + 50 ||
+          bird.y < -100 ||
+          (Math.abs(bird.vx) < 0.25 && Math.abs(bird.vy) < 0.3 && bird.y > GROUND - 40)
+        ) {
+          bird.alive = false;
+          launchedRef.current = false;
+          birdRef.current = null;
+
+          if (birdQueueRef.current > 0) {
+            createBird();
+            setMessage("Next bird ready. Take another shot.");
+          } else {
+            const remaining = bodies.some((b) => b.alive && b.kind === "pig");
+            if (remaining) {
+              setLost(true);
+              setMessage("Out of birds! Try the level again.");
+            }
+          }
+        }
+      }
+
+      // Debris destroys pigs when it falls onto them.
+      for (const b of bodies) {
+        if (!b.alive || b.kind !== "block") continue;
+
+        for (const target of bodies) {
+          if (!target.alive || target.kind !== "pig") continue;
+
+          const overlap =
+            b.x < target.x + target.w &&
+            b.x + b.w > target.x &&
+            b.y < target.y + target.h &&
+            b.y + b.h > target.y;
+
+          if (overlap && Math.abs(b.vy) > 2) {
+            target.hp -= 1;
+            b.vy *= -0.15;
+
+            if (target.hp <= 0) {
+              target.alive = false;
+              scoreRef.current += 500;
+              setScore(scoreRef.current);
+            }
+          }
+        }
+      }
+
+      const pigsRemain = bodies.some((b) => b.alive && b.kind === "pig");
+
+      if (!pigsRemain && !completedRef.current) {
+        void awardLevel();
+      }
+    };
+
+    const render = (time: number) => {
+      if (!running) return;
+
+      const dt = lastTimeRef.current ? time - lastTimeRef.current : 16.67;
+      lastTimeRef.current = time;
+
+      if (launchedRef.current) {
+        updateWorld(dt);
+      }
+
+      ctx.clearRect(0, 0, W, H);
+      drawBackground();
+
+      // Wooden slingshot sits behind the bird.
+      drawSlingshot();
+
+      for (const body of worldRef.current) {
+        if (!body.alive) continue;
+
+        if (body.kind === "block") {
+          drawBlock(body);
+        } else if (body.kind === "pig") {
+          drawPig(
+            body.x + body.w / 2,
+            body.y + body.h / 2,
+            body.radius ?? 17
+          );
+        }
+      }
+
+      if (birdRef.current?.alive) {
+        drawBird(
+          birdRef.current.x,
+          birdRef.current.y,
+          Math.atan2(birdRef.current.vy, birdRef.current.vx)
+        );
+      }
+
+      if (!launchedRef.current) {
+        drawScope();
+      }
+
+      // Bird queue at the bottom left.
+      for (let i = 0; i < birdQueueRef.current; i++) {
+        ctx.globalAlpha = 0.85;
+        drawBird(35 + i * 39, 510, 0);
+        ctx.globalAlpha = 1;
+      }
+
+      animationRef.current = requestAnimationFrame(render);
+    };
+
+    lastTimeRef.current = 0;
+    animationRef.current = requestAnimationFrame(render);
+
+    return () => {
+      running = false;
+      if (animationRef.current) cancelAnimationFrame(animationRef.current);
+    };
+  }, [screen, skin.colour, showTrajectory, createBird]);
+
+  const restartLevel = () => {
+    startLevel(activeLevel);
   };
 
   if (!loaded) {
     return (
-      <main className="loading-screen">
-        <div className="loading-icon">🐦</div>
-        <h1>Slingshot Adventures</h1>
+      <main className="loading">
+        <h1>🐦 Slingshot Adventures</h1>
         <p>Loading your game...</p>
-        <style jsx>{`
-          .loading-screen {
-            min-height: 100vh;
-            display: grid;
-            place-content: center;
-            text-align: center;
-            background: #10131c;
-            color: white;
-            font-family: Arial, sans-serif;
-          }
-          .loading-icon { font-size: 48px; }
-          p { color: #aab2c4; }
-        `}</style>
       </main>
     );
   }
 
   return (
-    <main className="game-app">
+    <main className="app">
       <aside className="sidebar">
-        <Link href="/" className="brand">
-          <span className="brand-icon">🎮</span>
-          <span>Keith&apos;s Games</span>
-        </Link>
-
+        <Link href="/" className="brand">🎮 Keith&apos;s Games</Link>
         <div className="nav-label">SLINGSHOT ADVENTURES</div>
 
-        <button
-          className={`nav-button ${screen === "home" ? "active" : ""}`}
-          onClick={() => setScreen("home")}
-        >
-          <span>⌂</span> Dashboard
-        </button>
+        <button onClick={() => setScreen("home")}>⌂ Dashboard</button>
+        <button onClick={() => setScreen("levels")}>▦ Levels</button>
+        <button onClick={() => setScreen("shop")}>🛍️ Bird shop</button>
 
-        <button
-          className={`nav-button ${screen === "levels" ? "active" : ""}`}
-          onClick={() => setScreen("levels")}
-        >
-          <span>▦</span> Levels
-        </button>
-
-        <button
-          className={`nav-button ${screen === "shop" ? "active" : ""}`}
-          onClick={() => setScreen("shop")}
-        >
-          <span>🛍️</span> Coin shop
-        </button>
-
-        <div className="sidebar-bottom">
-          <div className="player-avatar">K</div>
+        <div className="side-bottom">
+          <div className="avatar">K</div>
           <div>
             <strong>Keith</strong>
             <small>{userId ? "Signed in" : "Guest player"}</small>
@@ -444,23 +1152,13 @@ export default function SlingshotPage() {
         </div>
       </aside>
 
-      <section className="main-content">
+      <section className="main">
         <header className="topbar">
           <div>
-            <div className="eyebrow">YOUR ARCADE</div>
+            <small>KEITH&apos;S GAMES ARCADE</small>
             <h1>Slingshot Adventures</h1>
           </div>
-
-          <div className="topbar-right">
-            <div className="coin-pill">
-              <span>🪙</span>
-              <strong>{coins.toLocaleString()}</strong>
-              <small>COINS</small>
-            </div>
-            <div className="save-status">
-              {saving ? "Saving..." : "● Saved"}
-            </div>
-          </div>
+          <div className="balance">🪙 {coins.toLocaleString()}</div>
         </header>
 
         {notice && (
@@ -471,746 +1169,259 @@ export default function SlingshotPage() {
         )}
 
         {screen === "home" && (
-          <div className="dashboard">
-            <section className="hero">
-              <div className="hero-copy">
-                <span className="hero-tag">🐦 THE ADVENTURE STARTS HERE</span>
-                <h2>Ready, aim, <span>launch!</span></h2>
-                <p>Take aim, knock down the targets and earn coins as you progress.</p>
-                <button
-                  className="primary-button"
-                  onClick={() => startLevel(unlockedLevels)}
-                >
-                  Play level {unlockedLevels} <span>→</span>
-                </button>
-              </div>
-              <div className="hero-art">🎯</div>
-            </section>
-
-            <div className="section-heading">
-              <div>
-                <span className="eyebrow">YOUR PROGRESS</span>
-                <h2>Adventure overview</h2>
-              </div>
-            </div>
-
-            <div className="stats-grid">
-              <div className="stat-card">
-                <div className="stat-icon purple">🏆</div>
-                <div className="stat-number">{completedLevels.length}/{levelCount}</div>
-                <div className="stat-label">Levels completed</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-icon yellow">🪙</div>
-                <div className="stat-number">{coins.toLocaleString()}</div>
-                <div className="stat-label">Account coin balance</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-icon green">🔓</div>
-                <div className="stat-number">{unlockedLevels}/{levelCount}</div>
-                <div className="stat-label">Levels unlocked</div>
-              </div>
-            </div>
-
-            <div className="section-heading">
-              <div>
-                <span className="eyebrow">KEEP PLAYING</span>
-                <h2>Your adventure</h2>
-              </div>
-              <button className="text-button" onClick={() => setScreen("levels")}>
-                All levels →
+          <section className="hero">
+            <div>
+              <span>THE FORTRESS SMASHING ADVENTURE</span>
+              <h2>Pull back. Aim. <em>Destroy!</em></h2>
+              <p>
+                Knock down the towers, break through stone and glass,
+                and take out every pig.
+              </p>
+              <button className="primary" onClick={() => startLevel(unlockedLevels)}>
+                Continue level {unlockedLevels} →
               </button>
             </div>
+            <div className="hero-bird">🐦</div>
+          </section>
+        )}
 
-            <div className="quick-levels">
-              {[1, 2, 3].map((level) => (
+        {screen === "home" && (
+          <>
+            <div className="stats">
+              <div><strong>{completedLevels.length}/10</strong><span>Levels completed</span></div>
+              <div><strong>{coins}</strong><span>Account coins</span></div>
+              <div><strong>{unlockedLevels}/10</strong><span>Levels unlocked</span></div>
+              <div><strong>{Object.keys(bestScores).length}</strong><span>Best scores</span></div>
+            </div>
+
+            <h2 className="section-title">Your adventure</h2>
+            <div className="level-grid">
+              {[1, 2, 3, 4].map((level) => (
                 <button
-                  className="quick-level"
                   key={level}
                   disabled={level > unlockedLevels}
                   onClick={() => startLevel(level)}
+                  className="level-card"
                 >
-                  <span className="quick-level-icon">
-                    {completedLevels.includes(level) ? "🏆" : "🎯"}
-                  </span>
-                  <span>
-                    <strong>Level {level}</strong>
-                    <small>
-                      {completedLevels.includes(level)
-                        ? "Completed"
-                        : level > unlockedLevels
-                          ? "Locked"
-                          : "Ready to play"}
-                    </small>
-                  </span>
-                  <span className="quick-arrow">→</span>
+                  <span>{completedLevels.includes(level) ? "🏆" : "🎯"}</span>
+                  <strong>Level {level}</strong>
+                  <small>{level > unlockedLevels ? "Locked" : completedLevels.includes(level) ? "Completed" : "Ready"}</small>
                 </button>
               ))}
             </div>
-
-            <section className="shop-promo">
-              <div className="promo-icon">🛍️</div>
-              <div>
-                <h3>Customise your bird</h3>
-                <p>Collect coins and unlock new designs in the shop.</p>
-              </div>
-              <button
-                className="secondary-button"
-                onClick={() => setScreen("shop")}
-              >
-                Visit shop →
-              </button>
-            </section>
-          </div>
+          </>
         )}
 
         {screen === "levels" && (
-          <section className="page-section">
-            <div className="section-heading">
-              <div>
-                <span className="eyebrow">YOUR JOURNEY</span>
-                <h2>Choose a level</h2>
-                <p className="muted">Complete levels to unlock the next challenge.</p>
-              </div>
-            </div>
-
+          <>
+            <h2 className="section-title">Choose your level</h2>
             <div className="level-grid">
-              {Array.from({ length: levelCount }, (_, index) => {
-                const level = index + 1;
-                const locked = level > unlockedLevels;
-                const completed = completedLevels.includes(level);
-
-                return (
-                  <button
-                    key={level}
-                    className={`level-card ${completed ? "completed" : ""}`}
-                    disabled={locked}
-                    onClick={() => startLevel(level)}
-                  >
-                    <span className="level-symbol">
-                      {locked ? "🔒" : completed ? "🏆" : "🎯"}
-                    </span>
-                    <strong>Level {level}</strong>
-                    <small>
-                      {locked ? "Locked" : completed ? "Completed" : "Available"}
-                    </small>
-                    {bestScores[level] ? (
-                      <span className="level-score">{bestScores[level]} pts</span>
-                    ) : null}
-                  </button>
-                );
-              })}
+              {Array.from({ length: 10 }, (_, i) => i + 1).map((level) => (
+                <button
+                  key={level}
+                  disabled={level > unlockedLevels}
+                  onClick={() => startLevel(level)}
+                  className="level-card"
+                >
+                  <span>{level > unlockedLevels ? "🔒" : completedLevels.includes(level) ? "🏆" : "🎯"}</span>
+                  <strong>Level {level}</strong>
+                  <small>{bestScores[level] ? `${bestScores[level]} points` : "Play level"}</small>
+                </button>
+              ))}
             </div>
-          </section>
+          </>
         )}
 
         {screen === "shop" && (
-          <section className="page-section">
-            <div className="shop-header">
-              <div>
-                <span className="eyebrow">THE COLLECTION</span>
-                <h2>Bird shop</h2>
-                <p className="muted">Spend your account coins on new designs.</p>
-              </div>
-              <div className="shop-balance">🪙 {coins.toLocaleString()} coins</div>
-            </div>
-
-            <div className="skin-grid">
-              {skins.map((skin) => {
-                const owned = unlockedSkins.includes(skin.id);
-                const selected = selectedSkin === skin.id;
-
+          <>
+            <h2 className="section-title">Bird collection</h2>
+            <p className="muted">Unlock new bird designs and special abilities.</p>
+            <div className="shop-grid">
+              {skins.map((item) => {
+                const owned = unlockedSkins.includes(item.id);
                 return (
-                  <div className="skin-card" key={skin.id}>
-                    <div
-                      className="skin-preview"
-                      style={{ background: `${skin.colour}20` }}
-                    >
-                      <span style={{ color: skin.colour }}>{skin.emoji}</span>
-                    </div>
-                    <h3>{skin.name}</h3>
-                    <p>
-                      {skin.id === "classic"
-                        ? "The original design"
-                        : "A new look for your bird"}
-                    </p>
+                  <article className="skin-card" key={item.id}>
+                    <div className="skin-art" style={{ color: item.colour }}>{item.emoji}</div>
+                    <h3>{item.name}</h3>
+                    <p>{item.id === "fire" ? "Area damage burst" : item.id === "ice" ? "Powerful speed boost" : item.id === "nature" ? "Jumping ability" : "Special bird design"}</p>
                     <button
-                      className={`skin-button ${selected ? "selected" : ""}`}
-                      disabled={busy || (!owned && coins < skin.price)}
-                      onClick={() => void buySkin(skin)}
+                      disabled={busy || (!owned && coins < item.price)}
+                      onClick={() => void buySkin(item)}
                     >
-                      {selected
-                        ? "✓ Equipped"
-                        : owned
-                          ? "Equip"
-                          : `🪙 ${skin.price}`}
+                      {selectedSkin === item.id ? "✓ Equipped" : owned ? "Equip" : `🪙 ${item.price}`}
                     </button>
-                  </div>
+                  </article>
                 );
               })}
             </div>
-
-            <div className="shop-note">
-              💡 Complete a level for 30 account coins the first time.
-            </div>
-          </section>
+          </>
         )}
 
         {screen === "game" && (
-          <section className="play-section">
-            <div className="play-header">
+          <section className="game">
+            <div className="game-head">
               <div>
-                <span className="eyebrow">SLINGSHOT CHALLENGE</span>
+                <small>FORTRESS ASSAULT</small>
                 <h2>Level {activeLevel}</h2>
               </div>
-              <div className="play-stats">
+              <div className="game-metrics">
+                <span>⭐ {score.toLocaleString()}</span>
                 <span>🎯 {shots} shots</span>
-                <span>⭐ {score} points</span>
+                <span>🐦 {birdsLeft} birds left</span>
               </div>
             </div>
 
-            <div className="game-board">
-              <svg
-                ref={gameRef}
-                viewBox="0 0 800 450"
-                className="game-svg"
-                onPointerDown={handlePointerDown}
-                onPointerMove={handlePointerMove}
-                onPointerUp={launch}
-                onPointerCancel={launch}
-              >
-                <defs>
-                  <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#9bd8f8" />
-                    <stop offset="100%" stopColor="#e5f6ff" />
-                  </linearGradient>
-                  <linearGradient id="wood" x1="0" y1="0" x2="1" y2="1">
-                    <stop offset="0%" stopColor="#d9a36b" />
-                    <stop offset="100%" stopColor="#956039" />
-                  </linearGradient>
-                </defs>
-
-                <rect width="800" height="450" fill="url(#sky)" />
-                <circle cx="680" cy="75" r="36" fill="#ffe49a" />
-                <path d="M0 350 Q180 300 350 355 T800 340 V450 H0Z" fill="#a7d58a" />
-                <path d="M0 385 Q250 345 500 390 T800 370 V450 H0Z" fill="#75b96c" />
-
-                <g opacity="0.35" fill="#fff">
-                  <ellipse cx="160" cy="100" rx="55" ry="17" />
-                  <ellipse cx="190" cy="90" rx="32" ry="22" />
-                  <ellipse cx="430" cy="145" rx="48" ry="14" />
-                  <ellipse cx="455" cy="135" rx="28" ry="20" />
-                </g>
-
-                <g>
-                  <rect x="570" y="260" width="20" height="140" rx="3" fill="url(#wood)" stroke="#704629" strokeWidth="2" />
-                  <rect x="680" y="260" width="20" height="140" rx="3" fill="url(#wood)" stroke="#704629" strokeWidth="2" />
-                  <rect x="560" y="245" width="150" height="18" rx="4" fill="url(#wood)" stroke="#704629" strokeWidth="2" />
-                  <rect x="590" y="205" width="20" height="40" rx="3" fill="#b6dff0" stroke="#6d9eaf" strokeWidth="2" />
-                  <rect x="650" y="205" width="20" height="40" rx="3" fill="#b6dff0" stroke="#6d9eaf" strokeWidth="2" />
-                  <rect x="580" y="190" width="100" height="15" rx="4" fill="url(#wood)" stroke="#704629" strokeWidth="2" />
-                  <rect x="615" y="150" width="25" height="40" rx="3" fill="url(#wood)" stroke="#704629" strokeWidth="2" />
-                </g>
-
-                <g opacity={targetHit ? 0.2 : 1}>
-                  <ellipse cx={600 - (activeLevel - 1) * 12} cy="315" rx="25" ry="22" fill="#65bb4c" stroke="#3d8536" strokeWidth="3" />
-                  <ellipse cx={590 - (activeLevel - 1) * 12} cy="307" rx="5" ry="7" fill="white" />
-                  <ellipse cx={610 - (activeLevel - 1) * 12} cy="307" rx="5" ry="7" fill="white" />
-                  <circle cx={591 - (activeLevel - 1) * 12} cy="308" r="2.5" fill="#222" />
-                  <circle cx={611 - (activeLevel - 1) * 12} cy="308" r="2.5" fill="#222" />
-                  <path d={`M${590 - (activeLevel - 1) * 12} 323 Q${600 - (activeLevel - 1) * 12} 331 ${610 - (activeLevel - 1) * 12} 323`} fill="none" stroke="#315d2b" strokeWidth="2" />
-                </g>
-
-                <path
-                  d="M125 390 L145 310 L170 390"
-                  fill="none"
-                  stroke="#80502f"
-                  strokeWidth="16"
-                  strokeLinecap="round"
-                />
-
-                {dragging && (
-                  <line
-                    x1="145"
-                    y1="310"
-                    x2={projectile.x}
-                    y2={projectile.y}
-                    stroke="#75502e"
-                    strokeWidth="8"
-                    strokeLinecap="round"
-                  />
-                )}
-
-                <path
-                  d={`M125 390 Q135 350 ${projectile.x} ${projectile.y}`}
-                  fill="none"
-                  stroke={currentSkin.colour}
-                  strokeWidth="7"
-                  strokeLinecap="round"
-                />
-
-                <circle
-                  cx={projectile.x}
-                  cy={projectile.y}
-                  r="21"
-                  fill={currentSkin.colour}
-                  stroke="#fff"
-                  strokeWidth="3"
-                />
-                <text
-                  x={projectile.x}
-                  y={projectile.y + 8}
-                  textAnchor="middle"
-                  fontSize="24"
-                >
-                  🐦
-                </text>
-
-                {dragging && (
-                  <line
-                    x1={projectile.x}
-                    y1={projectile.y}
-                    x2={projectile.x + (150 - projectile.x) * 2}
-                    y2={projectile.y + (310 - projectile.y) * 2}
-                    stroke="#334155"
-                    strokeDasharray="7 7"
-                    strokeWidth="2"
-                    opacity="0.5"
-                  />
-                )}
-              </svg>
-
-              <div className="game-message">{message}</div>
+            <div className="canvas-wrap">
+              <canvas
+                ref={canvasRef}
+                width={W}
+                height={H}
+                onPointerDown={startDrag}
+                onPointerMove={moveDrag}
+                onPointerUp={releaseBird}
+                onPointerCancel={releaseBird}
+              />
             </div>
 
-            <div className="game-controls">
-              <button className="secondary-button" onClick={resetShot}>
-                ↻ Reset shot
+            <div className="game-toolbar">
+              <button onClick={restartLevel}>↻ Restart level</button>
+              <button onClick={() => setShowTrajectory((v) => !v)}>
+                {showTrajectory ? "Hide scope" : "Show scope"}
               </button>
               <button
-                className="secondary-button"
-                onClick={() => {
-                  resetShot();
-                  setScreen("levels");
-                }}
+                onClick={activateAbility}
+                disabled={!birdRef.current || !launchedRef.current || abilityUsedRef.current}
               >
-                Exit level
+                ✨ Use bird ability
               </button>
-              <div className="game-tip">Drag the bird back and release to launch.</div>
+              <button onClick={() => setScreen("levels")}>Exit</button>
             </div>
 
-            {levelWon && (
-              <div className="win-panel">
-                <div className="win-emoji">🏆</div>
-                <h2>Level completed!</h2>
-                <p>You scored {score.toLocaleString()} points.</p>
-                <div className="win-reward">
-                  🪙 +{reward} coins
-                </div>
-                <div className="win-actions">
-                  <button
-                    className="secondary-button"
-                    onClick={() => setScreen("levels")}
-                  >
-                    Levels
-                  </button>
-                  <button
-                    className="primary-button"
-                    disabled={busy}
-                    onClick={nextLevel}
-                  >
-                    {busy
-                      ? "Saving..."
-                      : activeLevel === levelCount
-                        ? "Finish"
-                        : "Next level →"}
-                  </button>
-                </div>
+            <p className="message">{message}</p>
+            <p className="muted">
+              Pull the bird backwards. The dotted scope predicts its flight.
+              Release to fire. Use the ability button while the bird is flying.
+            </p>
+
+            <div className="material-guide">
+              <span>🪵 Wood — medium strength</span>
+              <span>💎 Glass — breaks easily</span>
+              <span>🪨 Stone — very strong</span>
+            </div>
+
+            {won && (
+              <div className="result">
+                <div>🏆</div>
+                <h2>All pigs defeated!</h2>
+                <p>Final score: {score.toLocaleString()}</p>
+                <p>🪙 Level reward: 30 coins on first completion</p>
+                <button className="primary" onClick={() => startLevel(Math.min(10, activeLevel + 1))}>
+                  {activeLevel === 10 ? "Play again" : "Next level →"}
+                </button>
+                <button onClick={() => setScreen("levels")}>Level selection</button>
+              </div>
+            )}
+
+            {lost && (
+              <div className="result">
+                <div>💥</div>
+                <h2>Out of birds!</h2>
+                <p>There are still pigs in the fortress.</p>
+                <button className="primary" onClick={restartLevel}>Try again</button>
               </div>
             )}
           </section>
         )}
 
-        <footer className="footer">
-          <span>Keith&apos;s Games</span>
-          <span>Slingshot Adventures</span>
-        </footer>
+        <footer>Keith&apos;s Games · Slingshot Adventures</footer>
       </section>
 
       <style jsx global>{`
         * { box-sizing: border-box; }
-        body { margin: 0; }
+        body { margin: 0; background: #10131c; }
+        button { font: inherit; cursor: pointer; }
+        button:disabled { opacity: .4; cursor: not-allowed; }
       `}</style>
 
       <style jsx>{`
-        .game-app {
-          min-height: 100vh;
-          display: flex;
-          background: #10131c;
-          color: #f4f5fa;
-          font-family: Arial, Helvetica, sans-serif;
-        }
-        button { font: inherit; cursor: pointer; }
-        button:disabled { cursor: not-allowed; opacity: .42; }
-        .sidebar {
-          width: 245px;
-          flex-shrink: 0;
-          min-height: 100vh;
-          background: #171b27;
-          border-right: 1px solid #292f40;
-          padding: 26px 18px;
-          display: flex;
-          flex-direction: column;
-          position: sticky;
-          top: 0;
-          height: 100vh;
-        }
-        .brand {
-          display: flex;
-          align-items: center;
-          gap: 11px;
-          color: white;
-          font-size: 17px;
-          font-weight: 800;
-          text-decoration: none;
-          margin: 0 5px 55px;
-        }
-        .brand-icon {
-          width: 38px;
-          height: 38px;
-          display: grid;
-          place-items: center;
-          border-radius: 12px;
-          background: #7457df;
-          font-size: 20px;
-        }
-        .nav-label, .eyebrow {
-          color: #858da4;
-          font-size: 10px;
-          font-weight: 800;
-          letter-spacing: 1.5px;
-        }
-        .nav-label { margin: 0 9px 13px; }
-        .nav-button {
-          display: flex;
-          align-items: center;
-          gap: 13px;
-          width: 100%;
-          border: 0;
-          border-radius: 10px;
-          padding: 13px 12px;
-          margin-bottom: 5px;
-          color: #aeb5c7;
-          background: transparent;
-          text-align: left;
-          font-size: 13px;
-        }
-        .nav-button span { width: 20px; font-size: 18px; text-align: center; }
-        .nav-button.active, .nav-button:hover {
-          color: white;
-          background: #29263e;
-        }
-        .nav-button.active { box-shadow: inset 3px 0 #9b80ff; }
-        .sidebar-bottom {
-          margin-top: auto;
-          border-top: 1px solid #303547;
-          padding: 20px 5px 0;
-          display: flex;
-          align-items: center;
-          gap: 11px;
-        }
-        .player-avatar {
-          width: 37px;
-          height: 37px;
-          border-radius: 50%;
-          background: #4c9b83;
-          display: grid;
-          place-items: center;
-          font-weight: 800;
-        }
-        .sidebar-bottom strong, .sidebar-bottom small { display: block; }
-        .sidebar-bottom strong { font-size: 13px; }
-        .sidebar-bottom small { color: #929aaf; margin-top: 4px; }
-        .main-content { flex: 1; min-width: 0; padding: 28px 38px 20px; }
-        .topbar {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          gap: 20px;
-          margin-bottom: 30px;
-        }
-        h1, h2, h3, p { margin-top: 0; }
-        .topbar h1 { font-size: 23px; margin: 7px 0 0; letter-spacing: -.6px; }
-        .topbar-right { display: flex; align-items: center; gap: 15px; }
-        .coin-pill {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          border: 1px solid #55472b;
-          background: #292418;
-          padding: 10px 14px;
-          border-radius: 12px;
-          color: #f6cf68;
-        }
-        .coin-pill strong { font-size: 15px; }
-        .coin-pill small { font-size: 9px; letter-spacing: 1px; color: #c5a95e; }
-        .save-status { font-size: 11px; color: #76c89c; }
-        .hero {
-          min-height: 225px;
-          padding: 33px 38px;
-          border-radius: 19px;
-          background: linear-gradient(110deg, #382c68, #59418b 58%, #8a5d9d);
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          overflow: hidden;
-          position: relative;
-        }
-        .hero-copy { max-width: 520px; position: relative; z-index: 1; }
-        .hero-tag { color: #d5c9ff; font-size: 10px; font-weight: 800; letter-spacing: 1.2px; }
-        .hero h2 { font-size: clamp(27px, 4vw, 39px); margin: 14px 0 9px; letter-spacing: -1.3px; }
-        .hero h2 span { color: #f7d579; }
-        .hero p { color: #ded7f2; font-size: 13px; line-height: 1.6; margin-bottom: 20px; }
-        .hero-art { font-size: 112px; margin-right: 45px; filter: drop-shadow(0 12px 12px #241a4540); }
-        .primary-button, .secondary-button {
-          border: 0;
-          border-radius: 9px;
-          padding: 12px 17px;
-          font-size: 12px;
-          font-weight: 800;
-          transition: transform .15s, filter .15s;
-        }
-        .primary-button:hover, .secondary-button:hover { transform: translateY(-2px); filter: brightness(1.08); }
-        .primary-button { background: #f1cc70; color: #292013; }
-        .primary-button span { margin-left: 10px; }
-        .secondary-button { background: #303749; color: #f2f3f8; }
-        .section-heading {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin: 31px 0 17px;
-        }
-        .section-heading h2, .shop-header h2, .play-header h2 {
-          font-size: 20px;
-          margin: 6px 0 0;
-          letter-spacing: -.5px;
-        }
-        .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; }
-        .stat-card {
-          background: #191e2b;
-          border: 1px solid #2b3142;
-          border-radius: 13px;
-          padding: 17px;
-        }
-        .stat-icon {
-          width: 34px;
-          height: 34px;
-          display: grid;
-          place-items: center;
-          border-radius: 10px;
-          margin-bottom: 14px;
-        }
-        .stat-icon.purple { background: #352c54; }
-        .stat-icon.yellow { background: #40371e; }
-        .stat-icon.green { background: #203d34; }
-        .stat-number { font-size: 25px; font-weight: 800; }
-        .stat-label { color: #929bb0; font-size: 11px; margin-top: 5px; }
-        .text-button { background: none; border: 0; color: #b7a5ff; font-size: 12px; font-weight: 700; }
-        .quick-levels { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; }
-        .quick-level {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          text-align: left;
-          background: #191e2b;
-          border: 1px solid #2b3142;
-          border-radius: 12px;
-          color: white;
-          padding: 14px;
-        }
-        .quick-level-icon { font-size: 23px; }
-        .quick-level strong, .quick-level small { display: block; }
-        .quick-level strong { font-size: 12px; }
-        .quick-level small { color: #929bb0; font-size: 10px; margin-top: 5px; }
-        .quick-arrow { margin-left: auto; color: #a99aff; }
-        .shop-promo {
-          margin-top: 22px;
-          padding: 17px 19px;
-          display: flex;
-          align-items: center;
-          gap: 15px;
-          background: #1d2230;
-          border: 1px solid #34384d;
-          border-radius: 13px;
-        }
-        .promo-icon { font-size: 28px; }
-        .shop-promo h3 { font-size: 13px; margin-bottom: 5px; }
-        .shop-promo p { color: #9da5b7; font-size: 11px; margin: 0; }
-        .shop-promo .secondary-button { margin-left: auto; white-space: nowrap; }
-        .page-section { max-width: 1100px; }
-        .muted { color: #969fb3; font-size: 12px; margin: 8px 0 0; }
-        .level-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 13px; }
-        .level-card {
-          min-height: 140px;
-          border: 1px solid #303649;
-          border-radius: 13px;
-          background: #1a1f2d;
-          color: white;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          gap: 7px;
-        }
-        .level-card.completed { border-color: #658e78; background: #1d302c; }
-        .level-symbol { font-size: 27px; }
-        .level-card strong { font-size: 13px; }
-        .level-card small, .level-score { color: #9ba5b8; font-size: 10px; }
-        .shop-header, .play-header { display: flex; justify-content: space-between; align-items: center; gap: 15px; }
-        .shop-balance {
-          color: #f3cf73;
-          background: #292418;
-          border: 1px solid #57492b;
-          border-radius: 10px;
-          padding: 12px 15px;
-          font-size: 12px;
-          font-weight: 800;
-        }
-        .skin-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 25px; }
-        .skin-card {
-          background: #1a1f2d;
-          border: 1px solid #303649;
-          border-radius: 14px;
-          padding: 15px;
-          text-align: center;
-        }
-        .skin-preview {
-          height: 115px;
-          border-radius: 10px;
-          display: grid;
-          place-items: center;
-        }
-        .skin-preview span { font-size: 52px; }
-        .skin-card h3 { font-size: 14px; margin: 14px 0 6px; }
-        .skin-card p { font-size: 10px; color: #929bb0; min-height: 24px; }
-        .skin-button {
-          width: 100%;
-          border: 0;
-          border-radius: 8px;
-          padding: 10px;
-          background: #7457df;
-          color: white;
-          font-weight: 800;
-          font-size: 11px;
-        }
-        .skin-button.selected { background: #244c3d; color: #9ee0bb; }
-        .skin-button:disabled { background: #303749; color: #929bb0; }
-        .shop-note {
-          margin-top: 18px;
-          padding: 14px;
-          border-radius: 10px;
-          background: #26283a;
-          color: #c4c7d6;
-          font-size: 11px;
-        }
-        .play-section { max-width: 1000px; }
-        .play-stats { display: flex; gap: 10px; }
-        .play-stats span { padding: 10px 13px; background: #202638; border-radius: 9px; color: #d5d9e5; font-size: 11px; }
-        .game-board {
-          margin-top: 20px;
-          overflow: hidden;
-          border: 1px solid #3b4356;
-          border-radius: 15px;
-          background: #b8e6f9;
-          position: relative;
-        }
-        .game-svg { display: block; width: 100%; touch-action: none; cursor: crosshair; }
-        .game-message {
-          background: #171c2be8;
-          color: white;
-          padding: 11px;
-          text-align: center;
-          font-size: 12px;
-        }
-        .game-controls {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          margin-top: 14px;
-          flex-wrap: wrap;
-        }
-        .game-tip { margin-left: auto; color: #9ba5b8; font-size: 11px; }
-        .win-panel {
-          margin-top: 20px;
-          padding: 25px;
-          border: 1px solid #557d68;
-          border-radius: 14px;
-          background: #1d302c;
-          text-align: center;
-        }
-        .win-emoji { font-size: 42px; }
-        .win-panel h2 { margin: 10px 0; }
-        .win-panel p { color: #b8c9bf; font-size: 13px; }
-        .win-reward { color: #f3cf73; font-weight: 800; margin: 15px; }
-        .win-actions { display: flex; justify-content: center; gap: 10px; }
-        .footer {
-          display: flex;
-          justify-content: space-between;
-          color: #687187;
-          font-size: 10px;
-          margin-top: 45px;
-          padding-top: 17px;
-          border-top: 1px solid #292f40;
-        }
-        .notice {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          gap: 12px;
-          background: #302b42;
-          border: 1px solid #55477b;
-          color: #e3dafa;
-          border-radius: 10px;
-          padding: 12px 15px;
-          margin-bottom: 18px;
-          font-size: 12px;
-        }
-        .notice button {
-          border: 0;
-          color: white;
-          background: transparent;
-          font-size: 20px;
-        }
+        .app { min-height: 100vh; display: flex; background: #10131c; color: #f5f6fa; font-family: Arial, sans-serif; }
+        .loading { min-height: 100vh; display: grid; place-content: center; background: #10131c; color: white; text-align: center; }
+        .sidebar { width: 235px; flex-shrink: 0; background: #191e2b; border-right: 1px solid #303648; padding: 25px 17px; display: flex; flex-direction: column; min-height: 100vh; }
+        .brand { color: white; text-decoration: none; font-size: 17px; font-weight: 900; margin: 5px 5px 55px; }
+        .nav-label { color: #8d96aa; font-size: 10px; font-weight: 900; letter-spacing: 1.5px; margin: 0 8px 15px; }
+        .sidebar > button { border: 0; background: transparent; color: #c0c6d5; padding: 14px 12px; text-align: left; border-radius: 9px; margin-bottom: 5px; }
+        .sidebar > button:hover { background: #303047; color: white; }
+        .side-bottom { margin-top: auto; border-top: 1px solid #34394a; padding-top: 18px; display: flex; gap: 11px; align-items: center; }
+        .avatar { width: 37px; height: 37px; display: grid; place-items: center; border-radius: 50%; background: #4d987f; font-weight: 900; }
+        .side-bottom strong, .side-bottom small { display: block; }
+        .side-bottom small { color: #9ba4b8; margin-top: 4px; }
+        .main { min-width: 0; flex: 1; padding: 28px 35px; }
+        .topbar { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 28px; }
+        .topbar small, .game-head small { color: #929bb0; letter-spacing: 1.5px; font-size: 10px; font-weight: 900; }
+        h1 { font-size: 24px; margin: 7px 0 0; }
+        .balance { background: #30291b; border: 1px solid #65512a; color: #f4d17b; border-radius: 10px; padding: 12px 17px; font-weight: 900; }
+        .notice { padding: 13px 15px; margin-bottom: 18px; background: #292541; border: 1px solid #514477; border-radius: 9px; color: #e1d8ff; }
+        .notice button { float: right; border: 0; color: white; background: transparent; }
+        .hero { min-height: 230px; padding: 35px; border-radius: 19px; background: linear-gradient(110deg, #354c62, #397b8c 60%, #4c9b80); display: flex; justify-content: space-between; align-items: center; overflow: hidden; }
+        .hero span { color: #d4f2e9; font-size: 10px; letter-spacing: 1.5px; font-weight: 900; }
+        .hero h2 { font-size: clamp(28px, 4vw, 43px); margin: 13px 0; }
+        .hero em { color: #ffdf83; font-style: normal; }
+        .hero p { color: #e1f2f1; max-width: 500px; line-height: 1.6; }
+        .hero-bird { font-size: 105px; filter: drop-shadow(0 12px 10px #142c3566); }
+        .primary { border: 0; border-radius: 9px; background: #f4d17b; color: #292216; font-weight: 900; padding: 13px 19px; }
+        .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 13px; margin: 24px 0 30px; }
+        .stats > div { background: #1b2130; border: 1px solid #30384b; padding: 18px; border-radius: 12px; }
+        .stats strong, .stats span { display: block; }
+        .stats strong { font-size: 23px; margin-bottom: 7px; }
+        .stats span { font-size: 11px; color: #a7b0c3; }
+        .section-title { margin: 28px 0 16px; font-size: 21px; }
+        .level-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(145px, 1fr)); gap: 13px; }
+        .level-card { background: #1b2130; border: 1px solid #343d51; color: white; border-radius: 12px; padding: 19px; display: grid; gap: 8px; text-align: left; }
+        .level-card:hover { border-color: #e4c36f; transform: translateY(-2px); }
+        .level-card span { font-size: 27px; }
+        .level-card small { color: #a5aec0; }
+        .muted { color: #a5aec0; line-height: 1.6; font-size: 13px; }
+        .shop-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 15px; }
+        .skin-card { background: #1b2130; border: 1px solid #343d51; border-radius: 13px; padding: 19px; text-align: center; }
+        .skin-art { font-size: 57px; padding: 15px; }
+        .skin-card p { color: #a5aec0; font-size: 12px; min-height: 30px; }
+        .skin-card button, .game-toolbar button, .result > button:not(.primary) { border: 0; border-radius: 8px; padding: 11px 14px; background: #343d51; color: white; font-weight: 800; }
+        .game { max-width: 1120px; margin: 0 auto; }
+        .game-head { display: flex; justify-content: space-between; align-items: center; gap: 15px; margin-bottom: 18px; }
+        .game-head h2 { margin: 6px 0 0; }
+        .game-metrics { display: flex; flex-wrap: wrap; gap: 12px; color: #f3d17a; font-weight: 800; font-size: 13px; }
+        .canvas-wrap { width: 100%; border: 4px solid #343d51; border-radius: 13px; overflow: hidden; background: #9bd9f4; touch-action: none; }
+        canvas { width: 100%; height: auto; display: block; touch-action: none; cursor: crosshair; }
+        .game-toolbar { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 14px; }
+        .game-toolbar button:hover { background: #4a5570; }
+        .message { color: #f3d17a; font-weight: 800; margin: 16px 0 7px; }
+        .material-guide { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 17px; color: #c3cada; font-size: 12px; }
+        .result { margin-top: 22px; padding: 24px; border: 1px solid #5b704d; border-radius: 14px; background: #202e27; text-align: center; }
+        .result > div { font-size: 42px; }
+        .result h2 { margin: 8px; }
+        .result p { color: #c1d6c7; }
+        .result button { margin: 5px; }
+        footer { color: #758096; font-size: 11px; padding: 35px 0 10px; }
         @media (max-width: 850px) {
-          .sidebar { width: 190px; padding: 20px 12px; }
-          .main-content { padding: 22px 20px; }
-          .level-grid { grid-template-columns: repeat(3, 1fr); }
+          .sidebar { width: 185px; }
+          .main { padding: 22px 18px; }
+          .stats { grid-template-columns: repeat(2, 1fr); }
+          .hero-bird { font-size: 70px; }
         }
         @media (max-width: 620px) {
-          .game-app { display: block; }
-          .sidebar {
-            position: static;
-            width: 100%;
-            height: auto;
-            min-height: 0;
-            padding: 12px;
-            flex-direction: row;
-            align-items: center;
-            gap: 8px;
-            overflow-x: auto;
-          }
-          .brand { margin: 0 10px 0 0; white-space: nowrap; }
-          .nav-label, .sidebar-bottom { display: none; }
-          .nav-button { width: auto; white-space: nowrap; padding: 10px; }
-          .main-content { padding: 18px 13px; }
-          .topbar { align-items: flex-start; flex-direction: column; }
-          .hero { padding: 24px; }
-          .hero-art { font-size: 65px; margin: 0; }
-          .stats-grid, .quick-levels { grid-template-columns: 1fr; }
-          .skin-grid { grid-template-columns: repeat(2, 1fr); }
-          .level-grid { grid-template-columns: repeat(2, 1fr); }
-          .shop-header, .play-header { align-items: flex-start; flex-direction: column; }
-          .game-tip { width: 100%; margin-left: 0; }
+          .app { display: block; }
+          .sidebar { width: 100%; min-height: auto; height: auto; padding: 12px; display: flex; flex-direction: row; align-items: center; gap: 6px; overflow-x: auto; }
+          .brand { margin: 0 12px 0 0; white-space: nowrap; }
+          .nav-label, .side-bottom { display: none; }
+          .sidebar > button { white-space: nowrap; padding: 10px; }
+          .main { padding: 17px 12px; }
+          .topbar h1 { font-size: 19px; }
+          .hero { padding: 23px; }
+          .hero-bird { font-size: 48px; }
+          .game-head { display: block; }
+          .game-metrics { margin-top: 12px; }
+          .stats { gap: 8px; }
+          .stats > div { padding: 13px; }
         }
       `}</style>
     </main>
