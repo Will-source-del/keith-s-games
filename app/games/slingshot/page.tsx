@@ -2,147 +2,261 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { getPlayer } from "@/lib/player";
-import { supabase } from "@/lib/supabase";
 import { loadGameSave, saveGame } from "@/lib/game-saves";
 
-type Skin = {
-  id: string;
-  name: string;
-  emoji: string;
-  stars: number;
-  colour: string;
+type Screen = "home" | "levels" | "game" | "shop";
+type Powerup = "heavy" | "blast" | "multi";
+
+type Block = {
+  id: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  material: "wood" | "stone" | "glass";
+  hp: number;
+  vx: number;
+  vy: number;
+  angle: number;
+  falling: boolean;
 };
 
-type Power = "boost" | "double" | "magnet";
-
-type Leader = {
-  user_id: string;
-  player_name: string;
-  total_score: number;
-  levels_completed: number;
+type Pig = {
+  id: number;
+  x: number;
+  y: number;
+  alive: boolean;
+  vx: number;
+  vy: number;
 };
 
-const skins: Skin[] = [
-  { id: "classic", name: "Classic", emoji: "🪵", stars: 0, colour: "#b87943" },
-  { id: "gold", name: "Golden", emoji: "🌟", stars: 5, colour: "#f5c542" },
-  { id: "ice", name: "Frost", emoji: "❄️", stars: 10, colour: "#62c9ed" },
-  { id: "fire", name: "Inferno", emoji: "🔥", stars: 15, colour: "#ff714d" },
-  { id: "neon", name: "Neon", emoji: "💜", stars: 25, colour: "#b58aff" },
-  { id: "nature", name: "Nature", emoji: "🌿", stars: 35, colour: "#63c985" },
-];
+type World = {
+  blocks: Block[];
+  pigs: Pig[];
+  particles: { x: number; y: number; life: number; colour: string }[];
+};
 
-const powerInfo: Record<Power, { name: string; emoji: string; price: number; description: string }> = {
-  boost: { name: "Super launch", emoji: "🚀", price: 60, description: "Launch with extra power." },
-  double: { name: "Double points", emoji: "✨", price: 80, description: "Double your next level score." },
-  magnet: { name: "Target magnet", emoji: "🧲", price: 70, description: "Makes the target easier to hit." },
+type SavedData = {
+  coins?: number;
+  unlockedLevels?: number;
+  completedLevels?: number[];
+  unlockedSkins?: string[];
+  selectedSkin?: string;
+  bestScores?: Record<number, number>;
+  powerups?: Record<Powerup, number>;
 };
 
 const levelCount = 10;
-const todayKey = () => new Date().toISOString().slice(0, 10);
+
+const skins = [
+  { id: "classic", name: "Classic", emoji: "🐦", price: 0, colour: "#d85d45" },
+  { id: "gold", name: "Golden", emoji: "🐤", price: 150, colour: "#f5c542" },
+  { id: "ice", name: "Frost", emoji: "🐧", price: 250, colour: "#62c9ed" },
+  { id: "fire", name: "Inferno", emoji: "🔥", price: 350, colour: "#ff714d" },
+  { id: "neon", name: "Neon", emoji: "💜", price: 500, colour: "#b58aff" },
+  { id: "nature", name: "Nature", emoji: "🌿", price: 650, colour: "#63c985" },
+];
+
+const powerupInfo: {
+  id: Powerup;
+  name: string;
+  emoji: string;
+  price: number;
+  description: string;
+}[] = [
+  {
+    id: "heavy",
+    name: "Heavy bird",
+    emoji: "💪",
+    price: 60,
+    description: "A heavier bird that hits blocks with extra force.",
+  },
+  {
+    id: "blast",
+    name: "Explosion",
+    emoji: "💥",
+    price: 90,
+    description: "Creates a powerful explosion around the impact.",
+  },
+  {
+    id: "multi",
+    name: "Triple shot",
+    emoji: "🐦",
+    price: 120,
+    description: "Launches three birds in a spread.",
+  },
+];
+
+const initialPowerups: Record<Powerup, number> = {
+  heavy: 2,
+  blast: 1,
+  multi: 1,
+};
+
+function makeWorld(level: number): World {
+  const base = 350;
+  const offset = Math.min(level - 1, 8) * 9;
+
+  const blocks: Block[] = [];
+  let id = 0;
+
+  const add = (
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    material: Block["material"]
+  ) => {
+    blocks.push({
+      id: id++,
+      x,
+      y,
+      w,
+      h,
+      material,
+      hp: material === "stone" ? 3 : material === "glass" ? 1 : 2,
+      vx: 0,
+      vy: 0,
+      angle: 0,
+      falling: false,
+    });
+  };
+
+  // Main building
+  const left = 510 - offset;
+  const right = 660 - offset;
+
+  add(left, base - 12, 150, 12, "stone");
+  add(left + 8, base - 55, 15, 43, "wood");
+  add(right - 23, base - 55, 15, 43, "wood");
+  add(left + 23, base - 55, 104, 12, "wood");
+  add(left + 25, base - 95, 12, 40, "glass");
+  add(right - 37, base - 95, 12, 40, "glass");
+  add(left + 37, base - 95, 76, 12, "wood");
+  add(left + 48, base - 135, 12, 40, "wood");
+  add(right - 60, base - 135, 12, 40, "wood");
+  add(left + 60, base - 135, 30, 12, "stone");
+
+  // Extra side structure
+  if (level >= 2) {
+    add(left - 90, base - 12, 80, 12, "stone");
+    add(left - 82, base - 52, 12, 40, "wood");
+    add(left - 25, base - 52, 12, 40, "wood");
+    add(left - 70, base - 64, 45, 12, "glass");
+  }
+
+  // Upper platform
+  if (level >= 4) {
+    add(left + 35, base - 180, 105, 12, "stone");
+    add(left + 48, base - 220, 12, 40, "wood");
+    add(right - 60, base - 220, 12, 40, "wood");
+    add(left + 60, base - 232, 30, 12, "glass");
+  }
+
+  // More complicated tower
+  if (level >= 7) {
+    add(right + 35, base - 12, 65, 12, "stone");
+    add(right + 40, base - 55, 12, 43, "wood");
+    add(right + 85, base - 55, 12, 43, "wood");
+    add(right + 52, base - 67, 34, 12, "glass");
+  }
+
+  const pigs: Pig[] = [
+    { id: 1, x: left + 75, y: base - 28, alive: true, vx: 0, vy: 0 },
+  ];
+
+  if (level >= 3) {
+    pigs.push({
+      id: 2,
+      x: left + 75,
+      y: base - 112,
+      alive: true,
+      vx: 0,
+      vy: 0,
+    });
+  }
+
+  if (level >= 6) {
+    pigs.push({
+      id: 3,
+      x: right + 65,
+      y: base - 28,
+      alive: true,
+      vx: 0,
+      vy: 0,
+    });
+  }
+
+  return { blocks, pigs, particles: [] };
+}
 
 export default function SlingshotPage() {
   const svgRef = useRef<SVGSVGElement>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const worldRef = useRef<World>(makeWorld(1));
+  const projectileRef = useRef({ x: 150, y: 310 });
+  const shotsRef = useRef(0);
+  const scoreRef = useRef(0);
+  const wonRef = useRef(false);
 
-  const [screen, setScreen] = useState("home");
+  const [screen, setScreen] = useState<Screen>("home");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const [coins, setCoins] = useState(0);
-  const [stars, setStars] = useState(0);
   const [unlockedLevels, setUnlockedLevels] = useState(1);
   const [completedLevels, setCompletedLevels] = useState<number[]>([]);
-  const [bestScores, setBestScores] = useState<Record<number, number>>({});
   const [unlockedSkins, setUnlockedSkins] = useState<string[]>(["classic"]);
   const [selectedSkin, setSelectedSkin] = useState("classic");
-  const [powerups, setPowerups] = useState<Record<Power, number>>({
-    boost: 0,
-    double: 0,
-    magnet: 0,
-  });
-
-  const [dailyRewardDate, setDailyRewardDate] = useState("");
-  const [dailyChallengeDate, setDailyChallengeDate] = useState("");
-  const [leaderRewardDate, setLeaderRewardDate] = useState("");
-  const [dailyStreak, setDailyStreak] = useState(0);
-  const [lastRewardDate, setLastRewardDate] = useState("");
-
-  const [playerName, setPlayerName] = useState("Player");
-  const [leaders, setLeaders] = useState<Leader[]>([]);
-  const [myUserId, setMyUserId] = useState("");
+  const [bestScores, setBestScores] = useState<Record<number, number>>({});
+  const [powerups, setPowerups] = useState<Record<Powerup, number>>(initialPowerups);
 
   const [activeLevel, setActiveLevel] = useState(1);
-  const [dailyMode, setDailyMode] = useState(false);
-  const [dragging, setDragging] = useState(false);
+  const [world, setWorld] = useState<World>(makeWorld(1));
   const [projectile, setProjectile] = useState({ x: 150, y: 310 });
+  const [dragging, setDragging] = useState(false);
   const [launched, setLaunched] = useState(false);
   const [shots, setShots] = useState(0);
   const [score, setScore] = useState(0);
   const [levelWon, setLevelWon] = useState(false);
-  const [reward, setReward] = useState(0);
-  const [message, setMessage] = useState("Drag the bird backwards, then release!");
-  const [activePower, setActivePower] = useState<Power | null>(null);
+  const [message, setMessage] = useState("Pull the bird backwards and release!");
+  const [selectedPowerup, setSelectedPowerup] = useState<Powerup | null>(null);
+  const [shopTab, setShopTab] = useState<"birds" | "powerups">("powerups");
+  const [shake, setShake] = useState(false);
 
-  const currentSkin = skins.find((skin) => skin.id === selectedSkin) ?? skins[0];
-  const today = todayKey();
+  const currentSkin = skins.find((s) => s.id === selectedSkin) ?? skins[0];
 
-  const persist = useCallback(async (extra?: Record<string, unknown>) => {
+  const persist = useCallback(async (data: SavedData) => {
     try {
       setSaving(true);
-      await saveGame("slingshot", {
-        coins,
-        stars,
-        unlockedLevels,
-        completedLevels,
-        bestScores,
-        unlockedSkins,
-        selectedSkin,
-        powerups,
-        dailyRewardDate,
-        dailyChallengeDate,
-        leaderRewardDate,
-        dailyStreak,
-        lastRewardDate,
-        playerName,
-        ...extra,
-      });
+      await saveGame("slingshot", data);
     } catch (error) {
-      console.error("Could not save Slingshot progress:", error);
+      console.error("Could not save game:", error);
     } finally {
       setSaving(false);
     }
-  }, [
-    coins, stars, unlockedLevels, completedLevels, bestScores,
-    unlockedSkins, selectedSkin, powerups, dailyRewardDate,
-    dailyChallengeDate, leaderRewardDate, dailyStreak,
-    lastRewardDate, playerName,
-  ]);
+  }, []);
 
   useEffect(() => {
     let active = true;
 
     async function load() {
       try {
-        const data = await loadGameSave("slingshot");
+        const data = (await loadGameSave("slingshot")) as SavedData | null;
         if (!active) return;
 
-        setCoins(Number(data.coins) || 0);
-        setStars(Number(data.stars) || 0);
-        setUnlockedLevels(Number(data.unlockedLevels) || 1);
-        setCompletedLevels(Array.isArray(data.completedLevels) ? data.completedLevels : []);
-        setBestScores(data.bestScores || {});
-        setUnlockedSkins(Array.isArray(data.unlockedSkins) ? data.unlockedSkins : ["classic"]);
-        setSelectedSkin(data.selectedSkin || "classic");
-        setPowerups(data.powerups || { boost: 0, double: 0, magnet: 0 });
-        setDailyRewardDate(String(data.dailyRewardDate || ""));
-        setDailyChallengeDate(String(data.dailyChallengeDate || ""));
-        setLeaderRewardDate(String(data.leaderRewardDate || ""));
-        setDailyStreak(Number(data.dailyStreak) || 0);
-        setLastRewardDate(String(data.lastRewardDate || ""));
-        setPlayerName(String(data.playerName || "Player"));
+        if (data) {
+          setCoins(data.coins ?? 0);
+          setUnlockedLevels(data.unlockedLevels ?? 1);
+          setCompletedLevels(data.completedLevels ?? []);
+          setUnlockedSkins(data.unlockedSkins ?? ["classic"]);
+          setSelectedSkin(data.selectedSkin ?? "classic");
+          setBestScores(data.bestScores ?? {});
+          setPowerups({ ...initialPowerups, ...(data.powerups ?? {}) });
+        }
       } catch (error) {
-        console.error("Could not load Slingshot progress:", error);
+        console.error("Could not load game:", error);
       } finally {
         if (active) setLoaded(true);
       }
@@ -153,107 +267,83 @@ export default function SlingshotPage() {
     return () => {
       active = false;
       if (timerRef.current) clearInterval(timerRef.current);
+      if (saveTimer.current) clearTimeout(saveTimer.current);
     };
   }, []);
 
   useEffect(() => {
     if (!loaded) return;
-    const timer = window.setTimeout(() => persist(), 500);
-    return () => window.clearTimeout(timer);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+
+    saveTimer.current = setTimeout(() => {
+      persist({
+        coins,
+        unlockedLevels,
+        completedLevels,
+        unlockedSkins,
+        selectedSkin,
+        bestScores,
+        powerups,
+      });
+    }, 600);
+
+    return () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+    };
   }, [
-    loaded, coins, stars, unlockedLevels, completedLevels, bestScores,
-    unlockedSkins, selectedSkin, powerups, dailyRewardDate,
-    dailyChallengeDate, leaderRewardDate, dailyStreak,
-    lastRewardDate, playerName, persist,
+    loaded,
+    coins,
+    unlockedLevels,
+    completedLevels,
+    unlockedSkins,
+    selectedSkin,
+    bestScores,
+    powerups,
+    persist,
   ]);
 
-  const loadLeaderboard = useCallback(async () => {
-    try {
-      const { data, error } = await supabase
-        .from("slingshot_leaderboard")
-        .select("user_id, player_name, total_score, levels_completed")
-        .order("total_score", { ascending: false })
-        .limit(50);
+  const updateWorld = (next: World) => {
+    worldRef.current = next;
+    setWorld({ ...next });
+  };
 
-      if (error) throw error;
-      setLeaders((data || []) as Leader[]);
-    } catch (error) {
-      console.error("Could not load leaderboard:", error);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!loaded) return;
-
-    async function identifyPlayer() {
-      try {
-        const player = await getPlayer();
-        setMyUserId(player.id);
-      } catch (error) {
-        console.error("Could not identify player:", error);
-      }
-    }
-
-    identifyPlayer();
-    loadLeaderboard();
-  }, [loaded, loadLeaderboard]);
-
-  const updateLeaderboard = async (newScore: number, newLevels: number) => {
-    try {
-      const player = await getPlayer();
-      setMyUserId(player.id);
-
-      const { data: existing } = await supabase
-        .from("slingshot_leaderboard")
-        .select("total_score, levels_completed")
-        .eq("user_id", player.id)
-        .maybeSingle();
-
-      const totalScore = Math.max(Number(existing?.total_score) || 0, newScore);
-      const levelsCompleted = Math.max(Number(existing?.levels_completed) || 0, newLevels);
-
-      const { error } = await supabase
-        .from("slingshot_leaderboard")
-        .upsert({
-          user_id: player.id,
-          player_name: playerName.trim().slice(0, 18) || "Player",
-          total_score: totalScore,
-          levels_completed: levelsCompleted,
-          updated_at: new Date().toISOString(),
-        }, { onConflict: "user_id" });
-
-      if (error) throw error;
-      await loadLeaderboard();
-    } catch (error) {
-      console.error("Could not update leaderboard:", error);
-      setMessage("Score saved locally. Leaderboard update failed.");
-    }
+  const stopPhysics = () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = null;
   };
 
   const resetShot = () => {
-    if (timerRef.current) clearInterval(timerRef.current);
+    stopPhysics();
+    projectileRef.current = { x: 150, y: 310 };
     setProjectile({ x: 150, y: 310 });
     setDragging(false);
     setLaunched(false);
   };
 
-  const startLevel = (level: number, daily = false) => {
-    if (!daily && level > unlockedLevels) return;
+  const startLevel = (level: number) => {
+    if (level > unlockedLevels) return;
+    stopPhysics();
+
+    const next = makeWorld(level);
+    worldRef.current = next;
+    setWorld(next);
     setActiveLevel(level);
-    setDailyMode(daily);
     setShots(0);
     setScore(0);
+    shotsRef.current = 0;
+    scoreRef.current = 0;
+    wonRef.current = false;
     setLevelWon(false);
-    setReward(0);
-    setActivePower(null);
-    setMessage("Drag the bird backwards, then release!");
+    setSelectedPowerup(null);
     resetShot();
+    setMessage("Knock down the buildings and defeat every target!");
     setScreen("game");
   };
 
-  const pointerPosition = (event: React.PointerEvent<SVGSVGElement>) => {
+  const getPosition = (event: React.PointerEvent<SVGSVGElement>) => {
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return { x: 150, y: 310 };
+
     return {
       x: ((event.clientX - rect.left) / rect.width) * 800,
       y: ((event.clientY - rect.top) / rect.height) * 450,
@@ -262,56 +352,66 @@ export default function SlingshotPage() {
 
   const pointerDown = (event: React.PointerEvent<SVGSVGElement>) => {
     if (launched || levelWon) return;
-    const point = pointerPosition(event);
-    if (Math.hypot(point.x - projectile.x, point.y - projectile.y) < 65) {
+
+    const p = getPosition(event);
+    if (Math.hypot(p.x - projectile.x, p.y - projectile.y) < 65) {
       event.currentTarget.setPointerCapture(event.pointerId);
       setDragging(true);
     }
   };
 
   const pointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
-    if (!dragging) return;
-    const point = pointerPosition(event);
-    const dx = point.x - 150;
-    const dy = point.y - 310;
-    const distance = Math.hypot(dx, dy);
-    const scale = distance > 95 ? 95 / distance : 1;
-    setProjectile({ x: 150 + dx * scale, y: 310 + dy * scale });
+    if (!dragging || launched) return;
+
+    const p = getPosition(event);
+    const dx = p.x - 150;
+    const dy = p.y - 310;
+    const length = Math.hypot(dx, dy);
+    const max = 100;
+    const scale = length > max ? max / length : 1;
+    const next = { x: 150 + dx * scale, y: 310 + dy * scale };
+
+    projectileRef.current = next;
+    setProjectile(next);
   };
 
-  const finishLevel = async (finalScore: number, finalShots: number) => {
-    if (levelWon) return;
-
-    setLevelWon(true);
-    const firstCompletion = !completedLevels.includes(activeLevel);
-    const baseCoins = firstCompletion ? 30 : 0;
-    const scoreBonus = finalScore >= 1500 ? 30 : finalScore >= 800 ? 20 : 10;
-    const dailyBonus = dailyMode && dailyChallengeDate !== today ? 100 : 0;
-    const earned = baseCoins + scoreBonus + dailyBonus;
-
-    setReward(earned);
-    setCoins((value) => value + earned);
-    setCompletedLevels((value) => value.includes(activeLevel) ? value : [...value, activeLevel]);
-    setUnlockedLevels((value) => Math.max(value, Math.min(levelCount, activeLevel + 1)));
-    setBestScores((value) => ({
-      ...value,
-      [activeLevel]: Math.max(value[activeLevel] || 0, finalScore),
-    }));
-
-    if (dailyMode && dailyChallengeDate !== today) {
-      setDailyChallengeDate(today);
-      setStars((value) => value + 2);
+  const addParticles = (
+    particles: World["particles"],
+    x: number,
+    y: number,
+    colour: string
+  ) => {
+    for (let i = 0; i < 9; i++) {
+      particles.push({
+        x: x + (Math.random() - 0.5) * 25,
+        y: y + (Math.random() - 0.5) * 20,
+        life: 1,
+        colour,
+      });
     }
+  };
 
-    const nextCompleted = completedLevels.includes(activeLevel)
-      ? completedLevels.length
-      : completedLevels.length + 1;
+  const checkWin = (next: World) => {
+    const alive = next.pigs.some((pig) => pig.alive);
+    if (alive || wonRef.current) return;
 
+    wonRef.current = true;
+    setLevelWon(true);
+    setLaunched(false);
+
+    const first = !completedLevels.includes(activeLevel);
+    const earned = (first ? 40 : 0) + (scoreRef.current >= 1500 ? 25 : 10);
+
+    setCoins((v) => v + earned);
+    setCompletedLevels((v) =>
+      v.includes(activeLevel) ? v : [...v, activeLevel]
+    );
+    setUnlockedLevels((v) => Math.max(v, Math.min(levelCount, activeLevel + 1)));
+    setBestScores((v) => ({
+      ...v,
+      [activeLevel]: Math.max(v[activeLevel] ?? 0, scoreRef.current),
+    }));
     setMessage(`Level complete! You earned ${earned} coins.`);
-    setShots(finalShots);
-    setScore(finalScore);
-
-    await updateLeaderboard(finalScore, nextCompleted);
   };
 
   const launch = () => {
@@ -319,453 +419,444 @@ export default function SlingshotPage() {
 
     setDragging(false);
     setLaunched(true);
-    const finalShots = shots + 1;
-    setShots(finalShots);
 
     const dx = 150 - projectile.x;
     const dy = 310 - projectile.y;
+    const strength = Math.hypot(dx, dy);
     let x = projectile.x;
     let y = projectile.y;
-    let vx = dx * (activePower === "boost" ? 0.25 : 0.17);
-    let vy = dy * (activePower === "boost" ? 0.25 : 0.17);
+    let vx = dx * (selectedPowerup === "heavy" ? 0.23 : 0.18);
+    let vy = dy * (selectedPowerup === "heavy" ? 0.23 : 0.18);
 
-    const targetX = 600 - (activeLevel - 1) * 12;
-    const targetY = 270;
-    const strength = Math.hypot(dx, dy);
-    const hitRadius = activePower === "magnet" ? 68 : 43;
+    shotsRef.current += 1;
+    setShots(shotsRef.current);
 
-    if (activePower) {
-      setPowerups((value) => ({ ...value, [activePower]: Math.max(0, value[activePower] - 1) }));
+    const power = selectedPowerup;
+    if (power) {
+      setPowerups((v) => ({ ...v, [power]: Math.max(0, v[power] - 1) }));
+      setSelectedPowerup(null);
     }
 
-    const doublePoints = activePower === "double";
-    setActivePower(null);
-    setMessage("Nice shot!");
+    const birdRadius = power === "heavy" ? 19 : 13;
+    let blastDone = false;
+    let tripleBirds: { x: number; y: number; vx: number; vy: number }[] = [];
+
+    if (power === "multi") {
+      tripleBirds = [
+        { x, y, vx, vy },
+        { x, y: y - 8, vx: vx * 0.93, vy: vy - 1.4 },
+        { x, y: y + 8, vx: vx * 1.04, vy: vy + 1.4 },
+      ];
+    }
+
+    setMessage("Direct hit! Watch the structure collapse.");
 
     timerRef.current = setInterval(() => {
-      x += vx;
-      y += vy;
-      vy += 0.38;
-      vx *= 0.995;
-      setProjectile({ x, y });
+      const next = worldRef.current;
+      const birds = power === "multi"
+        ? tripleBirds
+        : [{ x, y, vx, vy }];
 
-      if (Math.hypot(x - targetX, y - targetY) < hitRadius) {
-        if (timerRef.current) clearInterval(timerRef.current);
-        const points = Math.round((500 + strength * 3) * (doublePoints ? 2 : 1));
-        const finalScore = score + points;
-        setScore(finalScore);
-        setMessage("Target hit!");
-        window.setTimeout(() => finishLevel(finalScore, finalShots), 250);
-        return;
+      for (const bird of birds) {
+        bird.x += bird.vx;
+        bird.y += bird.vy;
+        bird.vy += 0.34;
+        bird.vx *= 0.997;
+
+        for (const block of next.blocks) {
+          if (block.hp <= 0) continue;
+
+          const hit =
+            bird.x + birdRadius > block.x &&
+            bird.x - birdRadius < block.x + block.w &&
+            bird.y + birdRadius > block.y &&
+            bird.y - birdRadius < block.y + block.h;
+
+          if (hit) {
+            const damage = power === "heavy" ? 3 : 1;
+            block.hp -= damage;
+            block.falling = true;
+            block.vx += bird.vx * 0.23;
+            block.vy -= Math.max(1.5, Math.abs(bird.vy) * 0.4);
+            addParticles(
+              next.particles,
+              bird.x,
+              bird.y,
+              block.material === "glass" ? "#9ce8ff" :
+              block.material === "stone" ? "#9ca3af" : "#c58a50"
+            );
+
+            scoreRef.current += block.hp <= 0 ? 180 : 60;
+            setScore(scoreRef.current);
+
+            if (block.hp <= 0) {
+              addParticles(next.particles, block.x + block.w / 2, block.y + block.h / 2, "#d7b58c");
+            }
+
+            if (power === "blast" && !blastDone) {
+              blastDone = true;
+              setShake(true);
+              setTimeout(() => setShake(false), 250);
+
+              for (const nearby of next.blocks) {
+                const distance = Math.hypot(
+                  nearby.x + nearby.w / 2 - bird.x,
+                  nearby.y + nearby.h / 2 - bird.y
+                );
+                if (distance < 125) {
+                  nearby.hp -= 2;
+                  nearby.falling = true;
+                  nearby.vx += (nearby.x - bird.x) * 0.045;
+                  nearby.vy -= 5;
+                  if (nearby.hp <= 0) {
+                    addParticles(next.particles, nearby.x, nearby.y, "#e9a66d");
+                  }
+                }
+              }
+
+              for (const pig of next.pigs) {
+                if (pig.alive && Math.hypot(pig.x - bird.x, pig.y - bird.y) < 145) {
+                  pig.alive = false;
+                  scoreRef.current += 500;
+                }
+              }
+            }
+
+            bird.x = 900;
+            break;
+          }
+        }
+
+        for (const pig of next.pigs) {
+          if (pig.alive && Math.hypot(pig.x - bird.x, pig.y - bird.y) < 25) {
+            pig.alive = false;
+            scoreRef.current += 500;
+            addParticles(next.particles, pig.x, pig.y, "#8ee28c");
+            bird.x = 900;
+          }
+        }
       }
 
-      if (x > 820 || y > 450 || y < -100 || x < -50) {
-        if (timerRef.current) clearInterval(timerRef.current);
+      // Falling blocks collide with the ground and other blocks.
+      for (const block of next.blocks) {
+        if (block.hp <= 0) continue;
+
+        if (block.falling) {
+          block.vy += 0.42;
+          block.x += block.vx;
+          block.y += block.vy;
+          block.vx *= 0.985;
+          block.angle += block.vx * 0.012;
+
+          if (block.y + block.h >= 350) {
+            block.y = 350 - block.h;
+            block.vy *= -0.16;
+            block.vx *= 0.75;
+            if (Math.abs(block.vy) < 1) block.vy = 0;
+          }
+
+          for (const other of next.blocks) {
+            if (other.id === block.id || other.hp <= 0) continue;
+
+            const overlap =
+              block.x < other.x + other.w &&
+              block.x + block.w > other.x &&
+              block.y < other.y + other.h &&
+              block.y + block.h > other.y;
+
+            if (overlap) {
+              other.falling = true;
+              other.vx += block.vx * 0.3;
+              other.vy += Math.max(0, block.vy * 0.25);
+              block.vy *= -0.12;
+              block.hp -= 0.015;
+              other.hp -= 0.01;
+            }
+          }
+
+          // Falling debris can crush targets below it.
+          for (const pig of next.pigs) {
+            if (!pig.alive) continue;
+
+            const close =
+              pig.x > block.x - 12 &&
+              pig.x < block.x + block.w + 12 &&
+              pig.y + 13 > block.y &&
+              pig.y - 13 < block.y + block.h;
+
+            if (close) {
+              pig.alive = false;
+              scoreRef.current += 650;
+              addParticles(next.particles, pig.x, pig.y, "#7fe18b");
+              setMessage("CRUSHED! The falling building took out a target!");
+            }
+          }
+
+          if (block.hp <= 0) {
+            addParticles(next.particles, block.x, block.y, "#c58a50");
+          }
+        }
+      }
+
+      next.blocks = next.blocks.filter((b) => b.hp > 0);
+      next.particles = next.particles
+        .map((p) => ({ ...p, life: p.life - 0.035, y: p.y - 0.7 }))
+        .filter((p) => p.life > 0);
+
+      if (power !== "multi") {
+        x = birds[0].x;
+        y = birds[0].y;
+        vx = birds[0].vx;
+        vy = birds[0].vy;
+        setProjectile({ x, y });
+      } else {
+        tripleBirds = birds;
+        setProjectile({ x: birds[0].x, y: birds[0].y });
+      }
+
+      updateWorld(next);
+      setScore(scoreRef.current);
+      checkWin(next);
+
+      const allGone = birds.every(
+        (bird) => bird.x > 850 || bird.y > 470 || bird.y < -80
+      );
+
+      if (allGone) {
+        stopPhysics();
         setLaunched(false);
         setProjectile({ x: 150, y: 310 });
-        setMessage("Missed! Try another shot.");
+        projectileRef.current = { x: 150, y: 310 };
+        if (!wonRef.current) {
+          setMessage("The birds have finished flying. Take another shot!");
+        }
       }
     }, 16);
   };
 
-  const buyPower = (power: Power) => {
-    const item = powerInfo[power];
-    if (coins < item.price) return;
-    setCoins((value) => value - item.price);
-    setPowerups((value) => ({ ...value, [power]: value[power] + 1 }));
+  const buyPowerup = (id: Powerup) => {
+    const item = powerupInfo.find((p) => p.id === id);
+    if (!item || coins < item.price) return;
+
+    setCoins((v) => v - item.price);
+    setPowerups((v) => ({ ...v, [id]: v[id] + 1 }));
   };
 
-  const buySkin = (skin: Skin) => {
+  const buySkin = (skin: (typeof skins)[number]) => {
     if (unlockedSkins.includes(skin.id)) {
       setSelectedSkin(skin.id);
       return;
     }
-    if (stars < skin.stars) return;
-    setStars((value) => value - skin.stars);
-    setUnlockedSkins((value) => [...value, skin.id]);
+    if (coins < skin.price) return;
+
+    setCoins((v) => v - skin.price);
+    setUnlockedSkins((v) => [...v, skin.id]);
     setSelectedSkin(skin.id);
   };
 
-  const claimDailyReward = () => {
-    if (dailyRewardDate === today) return;
-
-    const yesterday = new Date();
-    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-    const yesterdayKey = yesterday.toISOString().slice(0, 10);
-    const streak = lastRewardDate === yesterdayKey ? dailyStreak + 1 : 1;
-    const coinReward = Math.min(50 + (streak - 1) * 10, 120);
-    const starReward = streak % 7 === 0 ? 3 : 1;
-
-    setCoins((value) => value + coinReward);
-    setStars((value) => value + starReward);
-    setDailyRewardDate(today);
-    setDailyStreak(streak);
-    setLastRewardDate(today);
-  };
-
-  const claimLeaderboardReward = () => {
-    if (leaderRewardDate === today || !myUserId) return;
-
-    const position = leaders.findIndex((entry) => entry.user_id === myUserId) + 1;
-    if (position === 0) {
-      setMessage("Play a level first to appear on the leaderboard.");
-      return;
-    }
-
-    const prize = position === 1 ? 250 : position <= 3 ? 150 : position <= 10 ? 75 : 25;
-    setCoins((value) => value + prize);
-    setLeaderRewardDate(today);
-    setMessage(`Leaderboard reward claimed: ${prize} coins!`);
-  };
-
   const nextLevel = () => {
-    if (dailyMode) {
-      setScreen("home");
-      return;
-    }
     if (activeLevel < levelCount) startLevel(activeLevel + 1);
     else setScreen("levels");
   };
 
   if (!loaded) {
-    return <main className="loading">🐦<h2>Loading Slingshot Adventures...</h2></main>;
+    return (
+      <main className="loading">
+        <div>🐦</div>
+        <h1>Slingshot Adventures</h1>
+        <p>Loading your game...</p>
+        <style jsx>{`
+          .loading{min-height:100vh;display:grid;place-content:center;text-align:center;background:#101522;color:white;font-family:Arial}
+          .loading div{font-size:55px}.loading p{color:#9ca8bb}
+        `}</style>
+      </main>
+    );
   }
-
-  const myRank = leaders.findIndex((entry) => entry.user_id === myUserId) + 1;
 
   return (
     <main className="app">
       <aside className="sidebar">
         <Link href="/" className="brand"><span>🎮</span> Keith&apos;s Games</Link>
         <div className="nav-label">SLINGSHOT ADVENTURES</div>
-        {[
-          ["home", "⌂", "Dashboard"],
-          ["levels", "▦", "Levels"],
-          ["daily", "📅", "Daily challenge"],
-          ["shop", "🛍️", "Coin shop"],
-          ["slingshots", "⭐", "Slingshots"],
-          ["powerups", "⚡", "Power-ups"],
-          ["leaderboard", "🏆", "Leaderboard"],
-          ["rewards", "🎁", "Daily rewards"],
-        ].map(([id, icon, label]) => (
-          <button
-            key={id}
-            className={`nav-button ${screen === id ? "active" : ""}`}
-            onClick={() => setScreen(id)}
-          >
-            <span>{icon}</span>{label}
-          </button>
-        ))}
-        <div className="sidebar-player"><span>K</span><div><strong>Keith</strong><small>Player</small></div></div>
+        <button className={screen === "home" ? "nav active" : "nav"} onClick={() => setScreen("home")}>⌂ <span>Dashboard</span></button>
+        <button className={screen === "levels" ? "nav active" : "nav"} onClick={() => setScreen("levels")}>▦ <span>Levels</span></button>
+        <button className={screen === "shop" ? "nav active" : "nav"} onClick={() => setScreen("shop")}>🛍️ <span>Shop</span></button>
+        <div className="player"><div>K</div><span><b>Keith</b><small>Player</small></span></div>
       </aside>
 
       <section className="main">
         <header className="topbar">
-          <div><div className="eyebrow">YOUR ARCADE</div><h1>Slingshot Adventures</h1></div>
-          <div className="balances">
-            <span>🪙 {coins.toLocaleString()}</span>
-            <span>⭐ {stars.toLocaleString()}</span>
-            <small>{saving ? "Saving..." : "● Saved"}</small>
-          </div>
+          <div><small>YOUR ARCADE</small><h1>Slingshot Adventures</h1></div>
+          <div className="top-right"><span className="coins">🪙 {coins.toLocaleString()}</span><small className="saved">{saving ? "Saving..." : "● Saved"}</small></div>
         </header>
 
         {screen === "home" && (
-          <>
+          <div className="content">
             <section className="hero">
-              <div>
-                <span className="hero-tag">🐦 THE ADVENTURE STARTS HERE</span>
-                <h2>Ready, aim, <em>launch!</em></h2>
-                <p>Hit the targets, complete challenges and build your collection.</p>
-                <button className="primary" onClick={() => startLevel(unlockedLevels)}>Play level {unlockedLevels} →</button>
-              </div>
-              <div className="hero-art">🎯</div>
+              <div><span className="tag">🐦 THE ADVENTURE STARTS HERE</span><h2>Knock it all down.</h2><p>Build your aim, smash the structures and defeat every target.</p><button className="primary" onClick={() => startLevel(unlockedLevels)}>Play level {unlockedLevels} →</button></div>
+              <div className="hero-art">🏚️💥</div>
             </section>
+            <div className="section-title"><div><small>YOUR PROGRESS</small><h2>Adventure overview</h2></div></div>
             <div className="stats">
-              <div><span>🏆</span><strong>{completedLevels.length}/{levelCount}</strong><small>Levels completed</small></div>
-              <div><span>🪙</span><strong>{coins.toLocaleString()}</strong><small>Coins collected</small></div>
-              <div><span>⭐</span><strong>{stars}</strong><small>Stars collected</small></div>
-              <div><span>🔥</span><strong>{dailyStreak}</strong><small>Daily streak</small></div>
+              <div><span>🏆</span><b>{completedLevels.length}/{levelCount}</b><small>Levels completed</small></div>
+              <div><span>🪙</span><b>{coins.toLocaleString()}</b><small>Coins collected</small></div>
+              <div><span>💪</span><b>{Object.values(powerups).reduce((a, b) => a + b, 0)}</b><small>Power-ups available</small></div>
             </div>
-            <div className="section-title"><div><small>COME BACK EVERY DAY</small><h2>Daily activities</h2></div></div>
-            <div className="feature-grid">
-              <button className="feature-card" onClick={() => setScreen("daily")}><span>📅</span><strong>Daily challenge</strong><small>{dailyChallengeDate === today ? "Completed today" : "Earn bonus coins and stars"}</small></button>
-              <button className="feature-card" onClick={() => setScreen("rewards")}><span>🎁</span><strong>Daily reward</strong><small>{dailyRewardDate === today ? "Come back tomorrow" : "Your reward is ready"}</small></button>
-              <button className="feature-card" onClick={() => setScreen("leaderboard")}><span>🏆</span><strong>Leaderboard</strong><small>{myRank ? `Your rank: #${myRank}` : "Get on the leaderboard"}</small></button>
+            <div className="section-title"><div><small>KEEP PLAYING</small><h2>Your adventure</h2></div><button className="link-button" onClick={() => setScreen("levels")}>All levels →</button></div>
+            <div className="quick">
+              {[1, 2, 3].map((n) => <button key={n} disabled={n > unlockedLevels} onClick={() => startLevel(n)}><span>{completedLevels.includes(n) ? "🏆" : "🎯"}</span><b>Level {n}</b><small>{completedLevels.includes(n) ? "Completed" : n > unlockedLevels ? "Locked" : "Ready to play"}</small>→</button>)}
             </div>
-            <div className="section-title"><div><small>KEEP PLAYING</small><h2>Your levels</h2></div><button className="text-button" onClick={() => setScreen("levels")}>View all →</button></div>
-            <div className="quick-levels">
-              {[1, 2, 3].map((level) => (
-                <button key={level} disabled={level > unlockedLevels} onClick={() => startLevel(level)}>
-                  <span>{completedLevels.includes(level) ? "🏆" : level > unlockedLevels ? "🔒" : "🎯"}</span>
-                  <strong>Level {level}</strong>
-                  <small>{completedLevels.includes(level) ? "Completed" : level > unlockedLevels ? "Locked" : "Play now"}</small>
-                </button>
-              ))}
-            </div>
-          </>
+            <section className="promo"><span>💥</span><div><b>Need a little extra power?</b><small>Stock up on heavy birds, explosions and triple shots.</small></div><button className="secondary" onClick={() => setScreen("shop")}>Visit shop →</button></section>
+          </div>
         )}
 
         {screen === "levels" && (
-          <section className="page-section">
-            <div className="section-title"><div><small>YOUR JOURNEY</small><h2>Choose a level</h2><p>Complete levels to unlock the next one.</p></div></div>
+          <div className="content">
+            <div className="section-title"><div><small>YOUR JOURNEY</small><h2>Choose a level</h2><p>Each level adds more structures and tougher layouts.</p></div></div>
             <div className="level-grid">
-              {Array.from({ length: levelCount }, (_, index) => {
-                const level = index + 1;
-                const locked = level > unlockedLevels;
-                const done = completedLevels.includes(level);
-                return <button key={level} disabled={locked} className={done ? "completed" : ""} onClick={() => startLevel(level)}>
-                  <span>{locked ? "🔒" : done ? "🏆" : "🎯"}</span><strong>Level {level}</strong><small>{locked ? "Locked" : done ? "Completed" : "Available"}</small>
-                  {bestScores[level] ? <small>{bestScores[level]} pts</small> : null}
-                </button>;
-              })}
+              {Array.from({ length: levelCount }, (_, i) => i + 1).map((n) => (
+                <button key={n} disabled={n > unlockedLevels} className={completedLevels.includes(n) ? "level-card done" : "level-card"} onClick={() => startLevel(n)}>
+                  <span>{n > unlockedLevels ? "🔒" : completedLevels.includes(n) ? "🏆" : "🎯"}</span><b>Level {n}</b><small>{n > unlockedLevels ? "Locked" : completedLevels.includes(n) ? "Completed" : "Available"}</small>{bestScores[n] ? <small>{bestScores[n]} pts</small> : null}
+                </button>
+              ))}
             </div>
-          </section>
-        )}
-
-        {screen === "daily" && (
-          <section className="page-section">
-            <div className="section-title"><div><small>CHANGES EVERY DAY</small><h2>Daily challenge</h2><p>One special challenge each day. Complete it for extra rewards.</p></div></div>
-            <div className="daily-card">
-              <span className="daily-icon">🌟</span><h2>Daily target challenge</h2>
-              <p>Hit today&apos;s target to earn 100 bonus coins and 2 stars.</p>
-              <div className="daily-date">Challenge date: {today}</div>
-              {dailyChallengeDate === today
-                ? <div className="claimed">✓ Completed for today. Come back tomorrow.</div>
-                : <button className="primary" onClick={() => startLevel(((new Date().getUTCDate() - 1) % levelCount) + 1, true)}>Play today&apos;s challenge →</button>}
-            </div>
-          </section>
-        )}
-
-        {screen === "rewards" && (
-          <section className="page-section">
-            <div className="section-title"><div><small>DAILY BONUS</small><h2>Daily rewards</h2><p>Collect a reward every day. Your streak builds extra rewards.</p></div></div>
-            <div className="reward-card">
-              <span className="daily-icon">🎁</span><h2>{dailyRewardDate === today ? "Reward collected" : "Your daily reward is ready"}</h2>
-              <p>Collect coins and a star. Every seventh day gives you three stars.</p>
-              <div className="streak">🔥 {dailyStreak} day streak</div>
-              <button className="primary" disabled={dailyRewardDate === today} onClick={claimDailyReward}>
-                {dailyRewardDate === today ? "Come back tomorrow" : "Collect today's reward"}
-              </button>
-            </div>
-            <div className="reward-days">
-              {Array.from({ length: 7 }, (_, i) => <div key={i} className={i + 1 <= dailyStreak % 8 ? "day-done" : ""}><span>{i === 6 ? "⭐" : "🪙"}</span><strong>Day {i + 1}</strong><small>{i === 6 ? "3 stars" : `${50 + i * 10} coins`}</small></div>)}
-            </div>
-          </section>
+          </div>
         )}
 
         {screen === "shop" && (
-          <section className="page-section">
-            <div className="section-title"><div><small>SPEND YOUR COINS</small><h2>Power-up shop</h2><p>Buy boosts to help with your next shot.</p></div><span className="balance-label">🪙 {coins} coins</span></div>
-            <div className="shop-grid">
-              {(Object.keys(powerInfo) as Power[]).map((power) => {
-                const item = powerInfo[power];
-                return <div className="shop-card" key={power}><span>{item.emoji}</span><h3>{item.name}</h3><p>{item.description}</p><small>Owned: {powerups[power]}</small><button disabled={coins < item.price} onClick={() => buyPower(power)}>🪙 {item.price} · Buy</button></div>;
-              })}
-            </div>
-          </section>
-        )}
-
-        {screen === "slingshots" && (
-          <section className="page-section">
-            <div className="section-title"><div><small>STAR COLLECTION</small><h2>Slingshot collection</h2><p>Use stars to unlock different slingshot designs.</p></div><span className="balance-label">⭐ {stars} stars</span></div>
-            <div className="shop-grid">
-              {skins.map((skin) => {
-                const owned = unlockedSkins.includes(skin.id);
-                return <div className="shop-card" key={skin.id}><span style={{ color: skin.colour }}>{skin.emoji}</span><h3>{skin.name}</h3><p>{skin.id === "classic" ? "The original slingshot." : "A new look for your launcher."}</p><button disabled={!owned && stars < skin.stars} onClick={() => buySkin(skin)}>{selectedSkin === skin.id ? "✓ Equipped" : owned ? "Equip" : `⭐ ${skin.stars} stars`}</button></div>;
-              })}
-            </div>
-          </section>
-        )}
-
-        {screen === "powerups" && (
-          <section className="page-section">
-            <div className="section-title"><div><small>YOUR INVENTORY</small><h2>Power-ups</h2><p>Select one before launching. Each power-up is used once.</p></div></div>
-            <div className="shop-grid">
-              {(Object.keys(powerInfo) as Power[]).map((power) => <button key={power} className={`shop-card power-choice ${activePower === power ? "chosen" : ""}`} disabled={powerups[power] < 1} onClick={() => setActivePower(activePower === power ? null : power)}><span>{powerInfo[power].emoji}</span><h3>{powerInfo[power].name}</h3><p>{powerInfo[power].description}</p><small>Owned: {powerups[power]}</small><strong>{activePower === power ? "Selected ✓" : "Select power-up"}</strong></button>)}
-            </div>
-            <button className="secondary" onClick={() => setScreen("shop")}>Visit power-up shop →</button>
-          </section>
-        )}
-
-        {screen === "leaderboard" && (
-          <section className="page-section">
-            <div className="section-title"><div><small>GLOBAL SCORES</small><h2>Leaderboard</h2><p>Players are ranked by their highest recorded score.</p></div><button className="secondary" onClick={loadLeaderboard}>↻ Refresh</button></div>
-            <div className="leader-profile">
-              <label htmlFor="player-name">Your display name</label>
-              <input id="player-name" maxLength={18} value={playerName} onChange={(event) => setPlayerName(event.target.value)} onBlur={() => persist()} />
-              <span>{myRank ? `Your current position: #${myRank}` : "Play a level to join the leaderboard."}</span>
-            </div>
-            <div className="leader-list">
-              {leaders.length === 0 ? <p>No scores yet. Complete a level to be first on the board.</p> : leaders.map((leader, index) => <div className={`leader-row ${leader.user_id === myUserId ? "mine" : ""}`} key={leader.user_id}><strong className="rank">{index + 1}</strong><span className="leader-avatar">{index === 0 ? "👑" : "🎮"}</span><div><strong>{leader.player_name}</strong><small>{leader.levels_completed} levels completed</small></div><b>{Number(leader.total_score).toLocaleString()} pts</b></div>)}
-            </div>
-            <div className="leader-prize"><h3>Daily leaderboard reward</h3><p>1st: 250 coins · Top 3: 150 coins · Top 10: 75 coins · Other ranked players: 25 coins.</p><button className="primary" disabled={leaderRewardDate === today || !myRank} onClick={claimLeaderboardReward}>{leaderRewardDate === today ? "Claimed today" : "Claim rank reward"}</button><small>Reward can be claimed once per day, based on the displayed leaderboard position.</small></div>
-          </section>
+          <div className="content">
+            <div className="shop-head"><div><small>THE COLLECTION</small><h2>Adventure shop</h2><p>Use coins earned from levels to upgrade your game.</p></div><span className="coins">🪙 {coins.toLocaleString()}</span></div>
+            <div className="tabs"><button className={shopTab === "powerups" ? "tab active-tab" : "tab"} onClick={() => setShopTab("powerups")}>💥 Power-ups</button><button className={shopTab === "birds" ? "tab active-tab" : "tab"} onClick={() => setShopTab("birds")}>🐦 Bird styles</button></div>
+            {shopTab === "powerups" ? (
+              <div className="shop-grid">
+                {powerupInfo.map((p) => <article className="shop-card" key={p.id}><div className="shop-icon">{p.emoji}</div><h3>{p.name}</h3><p>{p.description}</p><small>You own: {powerups[p.id]}</small><button className="primary full" disabled={coins < p.price} onClick={() => buyPowerup(p.id)}>Buy · 🪙 {p.price}</button></article>)}
+              </div>
+            ) : (
+              <div className="shop-grid">
+                {skins.map((s) => {
+                  const owned = unlockedSkins.includes(s.id);
+                  return <article className="shop-card" key={s.id}><div className="shop-icon" style={{ color: s.colour }}>{s.emoji}</div><h3>{s.name}</h3><p>A different look for your bird.</p><button className="primary full" disabled={!owned && coins < s.price} onClick={() => buySkin(s)}>{selectedSkin === s.id ? "✓ Equipped" : owned ? "Equip" : `Buy · 🪙 ${s.price}`}</button></article>;
+                })}
+              </div>
+            )}
+          </div>
         )}
 
         {screen === "game" && (
-          <section className="play-section">
-            <div className="section-title"><div><small>{dailyMode ? "DAILY CHALLENGE" : "SLINGSHOT CHALLENGE"}</small><h2>{dailyMode ? "Daily target" : `Level ${activeLevel}`}</h2></div><span className="balance-label">🪙 {coins}</span></div>
-            <div className="game-stats"><span>🎯 {shots} shots</span><span>⭐ {score} points</span><span>⚡ {activePower ? powerInfo[activePower].name : "No power-up"}</span></div>
-            <div className="game-board">
+          <div className="content play-content">
+            <div className="play-head"><div><small>SLINGSHOT CHALLENGE</small><h2>Level {activeLevel}</h2></div><div className="play-stat"><span>🎯 {shots} shots</span><span>⭐ {score.toLocaleString()}</span><span>🐷 {world.pigs.filter(p => p.alive).length} left</span></div></div>
+
+            <div className={shake ? "board shake" : "board"}>
               <svg ref={svgRef} viewBox="0 0 800 450" className="game-svg" onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={launch} onPointerCancel={launch}>
-                <defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#9bd8f8" /><stop offset="100%" stopColor="#e5f6ff" /></linearGradient></defs>
-                <rect width="800" height="450" fill="url(#sky)" />
-                <circle cx="680" cy="75" r="36" fill="#ffe49a" />
-                <path d="M0 350 Q180 300 350 355 T800 340 V450 H0Z" fill="#a7d58a" />
-                <path d="M0 385 Q250 345 500 390 T800 370 V450 H0Z" fill="#75b96c" />
-                <rect x="580" y="315" width="18" height="85" rx="4" fill="#9c7046" />
-                <rect x="680" y="315" width="18" height="85" rx="4" fill="#9c7046" />
-                <rect x="575" y="300" width="128" height="15" rx="5" fill="#b98b5c" />
-                <g>
-                  <circle cx={600 - (activeLevel - 1) * 12} cy="270" r="32" fill="#e95c5c" />
-                  <circle cx={600 - (activeLevel - 1) * 12} cy="270" r="19" fill="#fff" />
-                  <circle cx={600 - (activeLevel - 1) * 12} cy="270" r="9" fill="#e95c5c" />
-                </g>
-                <path d="M125 390 L145 310 L170 390" fill="none" stroke="#80502f" strokeWidth="16" strokeLinecap="round" />
-                {dragging && <line x1="145" y1="310" x2={projectile.x} y2={projectile.y} stroke="#75502e" strokeWidth="8" strokeLinecap="round" />}
-                <path d={`M125 390 Q135 350 ${projectile.x} ${projectile.y}`} fill="none" stroke={currentSkin.colour} strokeWidth="7" strokeLinecap="round" />
-                <circle cx={projectile.x} cy={projectile.y} r="21" fill={currentSkin.colour} stroke="#fff" strokeWidth="3" />
-                <text x={projectile.x} y={projectile.y + 8} textAnchor="middle" fontSize="24">🐦</text>
-                {dragging && <line x1={projectile.x} y1={projectile.y} x2={projectile.x + (150 - projectile.x) * 2} y2={projectile.y + (310 - projectile.y) * 2} stroke="#334155" strokeDasharray="7 7" strokeWidth="2" opacity="0.5" />}
+                <defs>
+                  <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#78c5ef"/><stop offset="1" stopColor="#e6f6ff"/></linearGradient>
+                  <linearGradient id="grass" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#83c96b"/><stop offset="1" stopColor="#3e914d"/></linearGradient>
+                  <linearGradient id="wood" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#d9a66e"/><stop offset="1" stopColor="#94603b"/></linearGradient>
+                  <linearGradient id="stone" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#b8c2ce"/><stop offset="1" stopColor="#697787"/></linearGradient>
+                </defs>
+                <rect width="800" height="450" fill="url(#sky)"/>
+                <circle cx="680" cy="70" r="34" fill="#ffe7a1"/>
+                <g fill="#fff" opacity=".7"><ellipse cx="160" cy="90" rx="45" ry="13"/><ellipse cx="190" cy="84" rx="29" ry="17"/><ellipse cx="450" cy="125" rx="35" ry="10"/></g>
+                <path d="M0 330 Q120 270 260 330 T520 315 T800 325 V450 H0Z" fill="#9dcf83"/>
+                <rect y="350" width="800" height="100" fill="url(#grass)"/>
+                <path d="M0 370 Q180 350 350 375 T800 360" stroke="#b5e38a" strokeWidth="5" fill="none"/>
+                <g opacity=".7" fill="#438a4e"><path d="M30 350 l12 -35 12 35 M60 350 l10 -25 10 25 M740 350 l13 -38 13 38"/></g>
+
+                {/* Launcher: wooden fork, rope and sling */}
+                <path d="M112 390 L145 300 L160 305 L145 390Z" fill="#79502f" stroke="#53371f" strokeWidth="3"/>
+                <path d="M145 310 L128 270 M145 310 L174 270" stroke="#79502f" strokeWidth="13" strokeLinecap="round"/>
+                <path d="M128 270 Q146 250 174 270" stroke="#4e3525" strokeWidth="5" fill="none"/>
+                {dragging && <path d={`M128 270 Q145 290 ${projectile.x} ${projectile.y}`} stroke="#4d3827" strokeWidth="5" fill="none"/>}
+                {!dragging && <path d="M128 270 Q145 290 150 310" stroke="#4d3827" strokeWidth="4" fill="none"/>}
+
+                {/* Building blocks */}
+                {world.blocks.map((b) => {
+                  const fill = b.material === "wood" ? "url(#wood)" : b.material === "stone" ? "url(#stone)" : "#a8e8f2";
+                  return (
+                    <g key={b.id} transform={`translate(${b.x + b.w / 2} ${b.y + b.h / 2}) rotate(${b.angle * 180 / Math.PI})`} opacity={b.hp <= 0 ? 0 : 1}>
+                      <rect x={-b.w / 2} y={-b.h / 2} width={b.w} height={b.h} rx="3" fill={fill} stroke={b.material === "glass" ? "#4cacc2" : "#64482f"} strokeWidth="2"/>
+                      {b.material === "wood" && <path d={`M${-b.w/2+5} 0 H${b.w/2-5}`} stroke="#87552f" strokeWidth="2" opacity=".55"/>}
+                      {b.material === "stone" && <path d={`M${-b.w/2+5} ${-b.h/2+5} H${b.w/2-5}`} stroke="#e0e6eb" strokeWidth="2" opacity=".5"/>}
+                      {b.material === "glass" && <path d={`M${-b.w/2+4} ${b.h/2-4} L${b.w/2-4} ${-b.h/2+4}`} stroke="#fff" strokeWidth="3" opacity=".75"/>}
+                      {b.hp < 2 && <path d={`M-4 ${-b.h/2+3} l-4 7 7 4 -5 8`} stroke="#4d3528" strokeWidth="2" fill="none"/>}
+                    </g>
+                  );
+                })}
+
+                {/* Targets */}
+                {world.pigs.filter(p => p.alive).map((pig) => (
+                  <g key={pig.id}>
+                    <ellipse cx={pig.x} cy={pig.y + 13} rx="17" ry="5" fill="#315c38" opacity=".25"/>
+                    <circle cx={pig.x} cy={pig.y} r="14" fill="#72d56c" stroke="#398a48" strokeWidth="2"/>
+                    <circle cx={pig.x - 5} cy={pig.y - 3} r="2.4" fill="#172b21"/>
+                    <circle cx={pig.x + 5} cy={pig.y - 3} r="2.4" fill="#172b21"/>
+                    <ellipse cx={pig.x} cy={pig.y + 5} rx="6" ry="4" fill="#b8ed9e"/>
+                    <circle cx={pig.x - 2} cy={pig.y + 5} r="1" fill="#386f42"/>
+                    <circle cx={pig.x + 2} cy={pig.y + 5} r="1" fill="#386f42"/>
+                    <path d={`M${pig.x-9} ${pig.y-11} l-4 -9 10 4 M${pig.x+9} ${pig.y-11} l4 -9 -10 4`} fill="#72d56c" stroke="#398a48" strokeWidth="2"/>
+                  </g>
+                ))}
+
+                {/* Flying bird */}
+                {!levelWon && <g>
+                  <circle cx={projectile.x} cy={projectile.y} r={selectedPowerup === "heavy" ? 18 : 13} fill={currentSkin.colour} stroke="#fff" strokeWidth="2.5"/>
+                  <path d={`M${projectile.x-7} ${projectile.y-8} q-12 -12 -12 -2 q8 0 12 2`} fill="#fff" opacity=".7"/>
+                  <circle cx={projectile.x+4} cy={projectile.y-3} r="3" fill="#fff"/>
+                  <circle cx={projectile.x+5} cy={projectile.y-3} r="1.5" fill="#18202b"/>
+                  <path d={`M${projectile.x+10} ${projectile.y+1} l10 4 -10 4`} fill="#f4bd50"/>
+                </g>}
+
+                {/* Debris and impact particles */}
+                {world.particles.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r={3 + p.life * 3} fill={p.colour} opacity={p.life}/>)}
+                {dragging && <path d={`M${projectile.x} ${projectile.y} L${projectile.x+(150-projectile.x)*2} ${projectile.y+(310-projectile.y)*2}`} stroke="#34495e" strokeWidth="2" strokeDasharray="6 7" opacity=".6"/>}
               </svg>
               <div className="game-message">{message}</div>
             </div>
-            <div className="game-controls">
-              <button className="secondary" onClick={resetShot}>↻ Reset shot</button>
-              <button className="secondary" onClick={() => setScreen("levels")}>Exit level</button>
-              <span>Drag the bird backwards and release to launch.</span>
+
+            <div className="powerup-bar">
+              <div className="powerup-heading"><b>IN-GAME POWER-UPS</b><small>Select one before launching</small></div>
+              {powerupInfo.map((p) => (
+                <button key={p.id} disabled={powerups[p.id] <= 0 || launched || levelWon} className={selectedPowerup === p.id ? "power-button chosen" : "power-button"} onClick={() => setSelectedPowerup(selectedPowerup === p.id ? null : p.id)}>
+                  <span>{p.emoji}</span><b>{p.name}</b><small>×{powerups[p.id]}</small>
+                </button>
+              ))}
             </div>
-            {levelWon && <div className="win-panel"><span>🏆</span><h2>Level completed!</h2><p>You scored {score.toLocaleString()} points.</p><strong>🪙 +{reward} coins</strong>{dailyMode && dailyChallengeDate === today && <p>⭐ +2 stars for the daily challenge</p>}<div><button className="secondary" onClick={() => setScreen("levels")}>Levels</button><button className="primary" onClick={nextLevel}>{dailyMode ? "Back to dashboard" : activeLevel === levelCount ? "Finish" : "Next level →"}</button></div></div>}
-          </section>
+
+            <div className="game-controls">
+              <button className="secondary" onClick={resetShot}>↻ Reset bird</button>
+              <button className="secondary" onClick={() => setScreen("levels")}>Exit level</button>
+              <small>Pull the bird backwards, aim at the structure and release.</small>
+            </div>
+
+            {levelWon && <div className="win-panel"><div>🏆</div><h2>All targets defeated!</h2><p>You scored {score.toLocaleString()} points.</p><p className="win-coins">🪙 Coins added to your balance</p><button className="primary" onClick={nextLevel}>{activeLevel === levelCount ? "Finish" : "Next level →"}</button><button className="secondary" onClick={() => setScreen("levels")}>Level selection</button></div>}
+          </div>
         )}
 
-        <footer className="footer"><span>Keith&apos;s Games</span><span>Slingshot Adventures</span></footer>
+        <footer>Keith&apos;s Games <span>Slingshot Adventures</span></footer>
       </section>
 
       <style jsx>{`
-        * { box-sizing: border-box; }
-        .app { min-height:100vh; display:flex; background:#101521; color:#f4f6fb; font-family:Arial, sans-serif; }
-        button,input { font:inherit; }
-        button { cursor:pointer; }
-        button:disabled { opacity:.4; cursor:not-allowed; }
-        .sidebar { width:225px; flex-shrink:0; min-height:100vh; height:100vh; position:sticky; top:0; display:flex; flex-direction:column; padding:23px 15px; background:#171e2c; border-right:1px solid #293246; }
-        .brand { display:flex; align-items:center; gap:10px; margin:0 4px 38px; color:white; text-decoration:none; font-size:15px; font-weight:800; }
-        .brand span { display:grid; place-items:center; width:36px; height:36px; border-radius:11px; background:#6553bb; font-size:19px; }
-        .nav-label,.eyebrow,.section-title small { color:#8491a7; font-size:9px; font-weight:800; letter-spacing:1.3px; }
-        .nav-label { margin:0 9px 12px; }
-        .nav-button { display:flex; align-items:center; gap:11px; width:100%; border:0; border-radius:8px; padding:11px 10px; margin-bottom:3px; background:transparent; color:#aeb9cc; text-align:left; font-size:12px; }
-        .nav-button span { width:19px; text-align:center; }
-        .nav-button.active,.nav-button:hover { color:white; background:#2b2a45; }
-        .sidebar-player { margin-top:auto; padding:17px 4px 0; border-top:1px solid #303a4d; display:flex; align-items:center; gap:10px; }
-        .sidebar-player>span { width:35px; height:35px; display:grid; place-items:center; border-radius:50%; background:#3d806d; font-weight:800; }
-        .sidebar-player strong,.sidebar-player small { display:block; }
-        .sidebar-player strong { font-size:12px; }
-        .sidebar-player small { color:#8d9ab0; margin-top:3px; font-size:10px; }
-        .main { flex:1; min-width:0; padding:26px 32px 20px; }
-        .topbar { display:flex; align-items:center; justify-content:space-between; gap:15px; margin-bottom:25px; }
-        h1 { font-size:23px; margin:6px 0 0; }
-        h2 { margin:5px 0 0; font-size:20px; }
-        .balances { display:flex; align-items:center; gap:13px; }
-        .balances span,.balance-label { border:1px solid #4b442e; background:#282519; color:#f3d47b; padding:9px 12px; border-radius:9px; font-size:12px; font-weight:800; }
-        .balances small { color:#76c89c; font-size:10px; }
-        .hero { min-height:205px; display:flex; align-items:center; justify-content:space-between; padding:30px 35px; border-radius:17px; background:linear-gradient(110deg,#382c68,#59418b 58%,#8a5d9d); overflow:hidden; }
-        .hero-tag { color:#d5c9ff; font-size:9px; font-weight:800; letter-spacing:1px; }
-        .hero h2 { margin:13px 0 8px; font-size:clamp(27px,4vw,38px); }
-        .hero h2 em { color:#f7d579; font-style:normal; }
-        .hero p { color:#ded7f2; font-size:12px; margin:0 0 18px; }
-        .hero-art { font-size:100px; margin-right:35px; }
-        .primary,.secondary { border:0; border-radius:8px; padding:11px 15px; font-size:11px; font-weight:800; }
-        .primary { background:#f1cc70; color:#292013; }
-        .secondary { background:#303b50; color:white; }
-        .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-top:18px; }
-        .stats>div { background:#192231; border:1px solid #2b3548; border-radius:11px; padding:14px; }
-        .stats span,.stats strong,.stats small { display:block; }
-        .stats span { font-size:19px; margin-bottom:9px; }
-        .stats strong { font-size:21px; }
-        .stats small { color:#929fb3; font-size:10px; margin-top:4px; }
-        .section-title { display:flex; justify-content:space-between; align-items:center; gap:15px; margin:28px 0 14px; }
-        .section-title h2 { font-size:19px; }
-        .section-title p { color:#98a4b8; font-size:11px; margin:6px 0 0; }
-        .text-button { border:0; background:transparent; color:#b7a5ff; font-size:11px; }
-        .feature-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
-        .feature-card { text-align:left; border:1px solid #30394b; border-radius:11px; padding:15px; background:#192231; color:white; }
-        .feature-card span,.feature-card strong,.feature-card small { display:block; }
-        .feature-card span { font-size:23px; margin-bottom:10px; }
-        .feature-card strong { font-size:12px; }
-        .feature-card small { color:#9aa6b9; font-size:10px; margin-top:5px; }
-        .quick-levels { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
-        .quick-levels button { display:grid; grid-template-columns:35px 1fr; grid-template-rows:auto auto; text-align:left; gap:4px 9px; align-items:center; padding:13px; border:1px solid #30394b; border-radius:10px; background:#192231; color:white; }
-        .quick-levels button span { grid-row:1/3; font-size:22px; }
-        .quick-levels strong { font-size:11px; }
-        .quick-levels small { color:#9aa6b9; font-size:10px; }
-        .page-section { max-width:1050px; }
-        .level-grid { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; }
-        .level-grid button { min-height:125px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:7px; border:1px solid #30394b; border-radius:11px; background:#192231; color:white; }
-        .level-grid button.completed { border-color:#658e78; background:#1d302c; }
-        .level-grid button span { font-size:25px; }
-        .level-grid button strong { font-size:12px; }
-        .level-grid button small { color:#9ba5b8; font-size:10px; }
-        .daily-card,.reward-card { max-width:600px; padding:30px; text-align:center; border:1px solid #3a4054; border-radius:15px; background:#1a2232; }
-        .daily-icon { font-size:55px; }
-        .daily-card h2,.reward-card h2 { margin:12px 0; }
-        .daily-card p,.reward-card p { color:#aab5c8; font-size:12px; line-height:1.6; }
-        .daily-date,.streak { margin:16px 0; color:#f1d17b; font-size:12px; }
-        .claimed { color:#8bd5a9; font-size:12px; margin-top:15px; }
-        .reward-days { display:grid; grid-template-columns:repeat(7,1fr); gap:9px; margin-top:18px; max-width:700px; }
-        .reward-days div { display:grid; justify-items:center; gap:6px; padding:13px 5px; background:#1b2433; border:1px solid #30394b; border-radius:9px; }
-        .reward-days span { font-size:20px; }
-        .reward-days strong,.reward-days small { font-size:9px; }
-        .reward-days small { color:#a3aec0; }
-        .reward-days .day-done { border-color:#6b9a7c; }
-        .shop-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:18px; }
-        .shop-card { display:flex; flex-direction:column; align-items:center; text-align:center; padding:19px; background:#1a2232; border:1px solid #30394b; border-radius:12px; color:white; }
-        .shop-card>span { font-size:39px; margin-bottom:10px; }
-        .shop-card h3 { font-size:13px; margin:0 0 7px; }
-        .shop-card p { min-height:30px; color:#9da9bc; font-size:10px; line-height:1.5; }
-        .shop-card small { color:#e7cb80; font-size:10px; margin:3px 0 12px; }
-        .shop-card button,.shop-card>strong { width:100%; border:0; border-radius:8px; padding:10px; background:#7059cb; color:white; font-size:10px; font-weight:800; }
-        .power-choice { cursor:pointer; }
-        .power-choice.chosen { border-color:#a28cff; background:#292545; }
-        .balance-label { white-space:nowrap; }
-        .leader-profile { display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:15px; border:1px solid #30394b; border-radius:10px; background:#1a2232; }
-        .leader-profile label { color:#aab5c8; font-size:11px; }
-        .leader-profile input { width:160px; padding:9px; border:1px solid #46516a; border-radius:7px; background:#101825; color:white; }
-        .leader-profile span { color:#aab5c8; font-size:10px; }
-        .leader-list { margin-top:15px; border:1px solid #30394b; border-radius:11px; overflow:hidden; }
-        .leader-list>p { padding:20px; color:#aab5c8; font-size:12px; }
-        .leader-row { display:flex; align-items:center; gap:13px; padding:12px 15px; background:#1a2232; border-bottom:1px solid #30394b; }
-        .leader-row:last-child { border:0; }
-        .leader-row.mine { background:#292545; }
-        .rank { width:22px; color:#e5cb7d; font-size:13px; }
-        .leader-avatar { width:32px; height:32px; display:grid; place-items:center; border-radius:50%; background:#30394b; }
-        .leader-row div { flex:1; }
-        .leader-row div strong,.leader-row div small { display:block; }
-        .leader-row div strong { font-size:11px; }
-        .leader-row div small { color:#9da9bc; font-size:9px; margin-top:4px; }
-        .leader-row>b { color:#f0d17a; font-size:11px; }
-        .leader-prize { margin-top:15px; padding:17px; border:1px solid #51462d; border-radius:10px; background:#282519; }
-        .leader-prize h3 { margin:0 0 7px; font-size:13px; }
-        .leader-prize p,.leader-prize small { color:#c2b99f; font-size:10px; line-height:1.6; }
-        .leader-prize small { display:block; margin-top:9px; }
-        .play-section { max-width:1000px; }
-        .game-stats { display:flex; gap:10px; margin:15px 0; flex-wrap:wrap; }
-        .game-stats span { padding:9px 12px; background:#202b3c; border-radius:8px; font-size:10px; }
-        .game-board { overflow:hidden; border:1px solid #3b4356; border-radius:13px; background:#b8e6f9; }
-        .game-svg { display:block; width:100%; touch-action:none; cursor:crosshair; }
-        .game-message { padding:10px; background:#171c2be8; color:white; text-align:center; font-size:11px; }
-        .game-controls { display:flex; align-items:center; gap:9px; margin-top:13px; flex-wrap:wrap; }
-        .game-controls>span { margin-left:auto; color:#9da9bc; font-size:10px; }
-        .win-panel { margin-top:17px; padding:22px; text-align:center; border:1px solid #648a70; border-radius:12px; background:#20372d; }
-        .win-panel>span { font-size:35px; }
-        .win-panel h2 { margin:8px 0; }
-        .win-panel p { color:#b5c9ba; font-size:11px; }
-        .win-panel>strong { display:block; margin:13px; color:#f4d47b; }
-        .win-panel>div { display:flex; justify-content:center; gap:10px; }
-        .footer { display:flex; justify-content:space-between; margin-top:30px; padding-top:15px; border-top:1px solid #293448; color:#7f8ba0; font-size:10px; }
-        .loading { min-height:100vh; display:grid; place-content:center; text-align:center; background:#101521; color:white; }
-        @media(max-width:1000px) { .sidebar { width:190px; } .main { padding:22px; } .level-grid { grid-template-columns:repeat(4,1fr); } }
-        @media(max-width:760px) { .sidebar { width:62px; padding:15px 7px; } .brand { justify-content:center; margin:0 0 25px; } .brand:not(span) { font-size:0; } .brand span { font-size:19px; } .nav-label { display:none; } .nav-button { justify-content:center; font-size:0; padding:12px 4px; } .nav-button span { font-size:17px; } .sidebar-player { justify-content:center; } .sidebar-player div { display:none; } .stats { grid-template-columns:repeat(2,1fr); } .shop-grid { grid-template-columns:repeat(2,1fr); } .level-grid { grid-template-columns:repeat(3,1fr); } .hero-art { font-size:65px; margin:0; } }
-        @media(max-width:520px) { .main { padding:16px 11px; } .topbar { align-items:flex-start; flex-direction:column; } .balances { width:100%; justify-content:flex-start; } .hero { padding:23px 19px; } .hero-art { font-size:48px; } .hero p { max-width:230px; line-height:1.5; } .feature-grid,.quick-levels { grid-template-columns:1fr; } .shop-grid { grid-template-columns:1fr 1fr; gap:8px; } .shop-card { padding:12px 8px; } .shop-card>span { font-size:30px; } .level-grid { grid-template-columns:repeat(2,1fr); } .reward-days { grid-template-columns:repeat(4,1fr); } .game-controls>span { width:100%; margin:4px 0; } .footer { flex-direction:column; gap:7px; } }
+        *{box-sizing:border-box}
+        .app{min-height:100vh;display:flex;background:#101522;color:#f4f6fb;font-family:Arial,Helvetica,sans-serif}
+        button{font:inherit;cursor:pointer}button:disabled{opacity:.4;cursor:not-allowed}
+        .sidebar{width:235px;flex-shrink:0;background:#171e2c;border-right:1px solid #2b3445;padding:25px 17px;display:flex;flex-direction:column;min-height:100vh;position:sticky;top:0;height:100vh}
+        .brand{display:flex;align-items:center;gap:11px;color:#fff;text-decoration:none;font-weight:800;font-size:16px;margin:0 5px 52px}.brand span{width:38px;height:38px;display:grid;place-items:center;background:#7055d8;border-radius:12px;font-size:20px}
+        .nav-label,.topbar small,.section-title small,.shop-head small,.play-head small{font-size:10px;letter-spacing:1.4px;font-weight:800;color:#8491a7}
+        .nav-label{margin:0 8px 14px}.nav{width:100%;padding:13px 12px;display:flex;gap:13px;align-items:center;background:transparent;border:0;border-radius:9px;color:#aeb9ca;text-align:left;margin-bottom:5px}.nav span{font-size:13px}.nav.active,.nav:hover{background:#2b2b45;color:white;box-shadow:inset 3px 0 #a58bff}
+        .player{margin-top:auto;border-top:1px solid #303a4b;padding:20px 5px 0;display:flex;align-items:center;gap:11px}.player div{width:37px;height:37px;border-radius:50%;background:#4c9b83;display:grid;place-items:center;font-weight:800}.player b,.player small{display:block}.player b{font-size:13px}.player small{font-size:10px;color:#8d9ab0;margin-top:4px}
+        .main{flex:1;min-width:0;padding:27px 36px 20px}.topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:27px;gap:15px}.topbar h1{font-size:23px;margin:6px 0 0}.top-right{display:flex;align-items:center;gap:15px}.coins{background:#30291a;border:1px solid #66532b;color:#f4d278;border-radius:10px;padding:10px 14px;font-weight:800;font-size:13px}.saved{font-size:10px;color:#79c99b}
+        .content{max-width:1150px}.hero{min-height:220px;padding:32px 37px;border-radius:18px;background:linear-gradient(110deg,#352c65,#62458e 60%,#9c6590);display:flex;align-items:center;justify-content:space-between;overflow:hidden}.tag{font-size:10px;letter-spacing:1px;font-weight:800;color:#ded4ff}.hero h2{font-size:clamp(28px,4vw,40px);letter-spacing:-1px;margin:14px 0 9px}.hero p{font-size:13px;color:#ded8ee;margin-bottom:20px}.hero-art{font-size:80px;margin-right:30px;filter:drop-shadow(0 12px 10px #211b3b66)}
+        .primary,.secondary{border:0;border-radius:9px;padding:12px 17px;font-size:12px;font-weight:800}.primary{background:#f0cb70;color:#2b2111}.secondary{background:#303a4d;color:#f1f4f8}.primary:hover,.secondary:hover{filter:brightness(1.1);transform:translateY(-1px)}.full{width:100%}
+        .section-title{display:flex;align-items:center;justify-content:space-between;margin:30px 0 16px}.section-title h2,.shop-head h2,.play-head h2{font-size:20px;margin:6px 0 0}.section-title p,.shop-head p{font-size:12px;color:#929eb2;margin:7px 0 0}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.stats>div{padding:17px;background:#1a2231;border:1px solid #30394b;border-radius:12px}.stats span,.stats b,.stats small{display:block}.stats span{font-size:21px;margin-bottom:10px}.stats b{font-size:24px}.stats small{font-size:11px;color:#9aa6b9;margin-top:5px}.link-button{background:none;border:0;color:#b7a5ff;font-size:12px;font-weight:800}
+        .quick{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.quick button{display:grid;grid-template-columns:35px 1fr 15px;align-items:center;text-align:left;gap:4px 10px;padding:14px;background:#1a2231;border:1px solid #30394b;border-radius:11px;color:white}.quick button span{grid-row:span 2;font-size:22px}.quick button b{font-size:12px}.quick button small{font-size:10px;color:#929db0}.quick button> :last-child{grid-column:3;grid-row:1/3;color:#b6a5ff}.promo{display:flex;align-items:center;gap:14px;margin-top:22px;padding:17px;background:#20283a;border:1px solid #343e52;border-radius:12px}.promo>span{font-size:27px}.promo div{display:grid;gap:5px}.promo b{font-size:13px}.promo small{font-size:11px;color:#a0acc0}.promo button{margin-left:auto;white-space:nowrap}
+        .level-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:13px}.level-card{min-height:135px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;background:#1b2332;border:1px solid #354054;border-radius:12px;color:white}.level-card span{font-size:26px}.level-card b{font-size:13px}.level-card small{font-size:10px;color:#9ba8bb}.level-card.done{border-color:#5d9876;background:#1d302c}
+        .shop-head,.play-head{display:flex;align-items:center;justify-content:space-between;gap:15px}.tabs{display:flex;gap:8px;margin:24px 0 17px}.tab{border:1px solid #384258;background:#1c2535;color:#aeb9c9;border-radius:9px;padding:11px 15px;font-size:12px;font-weight:800}.active-tab{background:#42376b;color:#fff;border-color:#7761bd}.shop-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:15px}.shop-card{padding:17px;background:#1b2332;border:1px solid #354054;border-radius:13px}.shop-icon{height:95px;display:grid;place-items:center;background:#252e40;border-radius:10px;font-size:42px}.shop-card h3{font-size:15px;margin:14px 0 7px}.shop-card p{font-size:11px;color:#9ba8bb;min-height:30px;line-height:1.5}.shop-card>small{display:block;color:#e0c875;font-size:10px;margin:10px 0}
+        .play-content{max-width:1100px}.play-stat{display:flex;gap:8px;flex-wrap:wrap}.play-stat span{padding:10px 12px;background:#202a3b;border-radius:8px;font-size:11px;color:#dce2ec}.board{position:relative;margin-top:20px;border-radius:14px;overflow:hidden;border:1px solid #44536b;background:#9bd8f5;box-shadow:0 15px 35px #0003}.game-svg{display:block;width:100%;touch-action:none;cursor:crosshair}.game-message{position:absolute;bottom:0;left:0;right:0;padding:11px 14px;text-align:center;background:#151d2be8;color:#fff;font-size:12px}.shake{animation:shake .22s linear}@keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-5px)}75%{transform:translateX(5px)}}
+        .powerup-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:17px;padding:14px;background:#1b2434;border:1px solid #354055;border-radius:12px}.powerup-heading{display:grid;gap:5px;margin-right:auto}.powerup-heading b{font-size:11px;letter-spacing:.8px}.powerup-heading small{font-size:10px;color:#929fb4}.power-button{display:grid;grid-template-columns:25px auto auto;align-items:center;gap:6px;background:#283349;color:#f3f5fa;border:1px solid #3d4b64;border-radius:9px;padding:9px 11px}.power-button span{font-size:18px}.power-button b{font-size:10px}.power-button small{font-size:10px;color:#f1d17c}.power-button.chosen{border-color:#b19aff;background:#453a70;box-shadow:0 0 0 2px #9276df55}.game-controls{display:flex;align-items:center;gap:9px;margin-top:13px;flex-wrap:wrap}.game-controls small{margin-left:auto;color:#929fb2;font-size:11px}.win-panel{margin-top:20px;text-align:center;padding:24px;background:#1c2d29;border:1px solid #5c9a78;border-radius:14px}.win-panel>div{font-size:36px}.win-panel h2{font-size:22px;margin:8px 0}.win-panel p{color:#aebeb4;font-size:12px}.win-panel .win-coins{color:#f2d178}.win-panel button{margin:5px}
+        footer{margin-top:35px;padding-top:17px;border-top:1px solid #293346;color:#78869c;font-size:10px}footer span{float:right}
+        @media(max-width:900px){.sidebar{width:190px}.main{padding:22px}.level-grid{grid-template-columns:repeat(4,1fr)}}
+        @media(max-width:650px){.app{display:block}.sidebar{position:static;width:100%;height:auto;min-height:0;padding:12px;flex-direction:row;align-items:center;gap:8px;overflow-x:auto}.brand{margin:0 10px 0 0;white-space:nowrap;font-size:13px}.brand span{width:32px;height:32px}.nav-label,.player{display:none}.nav{width:auto;white-space:nowrap;padding:10px;font-size:12px}.nav span{display:none}.main{padding:17px 13px}.topbar h1{font-size:18px}.top-right{gap:7px}.saved{display:none}.hero{padding:23px;min-height:190px}.hero-art{font-size:43px;margin:0}.hero h2{font-size:27px}.stats{gap:8px}.stats>div{padding:12px}.stats b{font-size:19px}.quick{grid-template-columns:1fr}.level-grid{grid-template-columns:repeat(2,1fr)}.shop-grid{grid-template-columns:1fr 1fr}.shop-head{align-items:flex-start}.play-head{align-items:flex-start;flex-direction:column}.play-stat{gap:5px}.powerup-heading{width:100%}.power-button{flex:1}.game-controls small{width:100%;margin:4px 0}.promo{flex-wrap:wrap}.promo button{margin-left:0}.game-message{font-size:10px;padding:8px}}
+        @media(max-width:390px){.shop-grid{grid-template-columns:1fr}.power-button{padding:8px 6px}.power-button b{font-size:9px}}
       `}</style>
     </main>
   );
